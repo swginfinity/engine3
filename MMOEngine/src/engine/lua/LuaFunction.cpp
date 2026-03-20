@@ -151,7 +151,17 @@ lua_State* LuaFunction::callFunction() {
 		executionTimer.start();
 #endif
 #endif
-		int result = lua_pcall(getLuaState(), getNumberOfArgs(), getNumberOfReturnArgs(), 0);
+		// Infinity: Push traceback handler so lua_pcall includes file/line info in errors
+		lua_getglobal(getLuaState(), "debug");
+		lua_getfield(getLuaState(), -1, "traceback");
+		lua_remove(getLuaState(), -2); // remove debug table, leave traceback function
+		// Move traceback function to before the function and its args on the stack
+		lua_insert(getLuaState(), -(getNumberOfArgs() + 2));
+		int tracebackIdx = lua_gettop(getLuaState()) - getNumberOfArgs() - 1;
+
+		int result = lua_pcall(getLuaState(), getNumberOfArgs(), getNumberOfReturnArgs(), tracebackIdx);
+
+		lua_remove(getLuaState(), tracebackIdx); // remove traceback function
 
 #ifdef COLLECT_TASKSTATISTICS
 #ifdef CXX11_COMPILER
@@ -181,12 +191,12 @@ lua_State* LuaFunction::callFunction() {
 #endif
 
 		if (result != 0) {
-			luaLogger.error() << "Error running function " << getFunctionName() << " " << String(lua_tostring(getLuaState(), -1));
+			luaLogger.error() << "Error running function " << (getObject().length() ? getObject() + ":" : String("")) << getFunctionName() << " " << String(lua_tostring(getLuaState(), -1));
 
 			return nullptr;
 		}
 	} catch (const LuaPanicException& e) {
-		luaLogger.error() << "LuaPanicException running function " << getFunctionName() << " " << String(lua_tostring(getLuaState(), -1));
+		luaLogger.error() << "LuaPanicException running function " << (getObject().length() ? getObject() + ":" : String("")) << getFunctionName() << " " << String(lua_tostring(getLuaState(), -1));
 
 		return nullptr;
 	}
