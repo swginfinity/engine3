@@ -132,7 +132,7 @@ void LocalDatabase::openDatabase() {
 
 		config.setType(static_cast<DBTYPE>(Core::getIntProperty("BerkeleyDB.type", static_cast<int>(berkeley::DatabaseType::HASH))));
 		static const bool mvcc = Core::getIntProperty("BerkeleyDB.MVCC", 0);
-		config.setReadUncommited(!mvcc);
+		config.setReadUncommitted(!mvcc);
 		config.setMultiVersionConcurrencyControl(mvcc);
 		config.setReadOnly(Core::getIntProperty("BerkeleyDB.readOnly", 0));
 

@@ -54,7 +54,7 @@ namespace engine {
 		AtomicInteger totalUpdatedObjects;
 		AtomicInteger totalActuallyChangedObjects;
 
-		class SynchronizedCommitedObjects {
+		class SynchronizedCommittedObjects {
 		public:
 			Mutex mutex;
 			ska::bytell_hash_set<DistributedObject*> objects;
@@ -62,7 +62,7 @@ namespace engine {
 			void put(DistributedObject* obj);
 		};
 
-		SynchronizedCommitedObjects commitedObjects;
+		SynchronizedCommittedObjects committedObjects;
 
 		ska::bytell_hash_set<DistributedObject*> uniqueModifiedObjectValues;
 		ska::bytell_hash_set<DistributedObject*> uniqueDeletedFromDbObjectValues;
@@ -142,7 +142,7 @@ namespace engine {
 		using UpdateCollection = ArrayList<Pair<ArrayList<DistributedObject*>*, ArrayList<DistributedObject*>*>>;
 
 		void finishObjectUpdate();
-		void checkCommitedObjects();
+		void checkCommittedObjects();
 		UpdateCollection collectModifiedObjectsFromThreads(const ArrayList<Pair<Locker*, TaskWorkerThread*>>& lockers, int flags);
 
 		UpdateModifiedObjectsThread* createUpdateModifiedObjectsThread();

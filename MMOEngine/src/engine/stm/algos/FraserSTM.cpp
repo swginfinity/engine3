@@ -34,8 +34,8 @@ bool FraserSTM::doCommit(Transaction* transaction) {
 					break;
 				} else {
 					if (competingTransaction != nullptr) {
-						if (competingTransaction->isCommited()) {
-							TransactionalMemoryManager::instance()->increaseFailedByCompetingCommited();
+						if (competingTransaction->isCommitted()) {
+							TransactionalMemoryManager::instance()->increaseFailedByCompetingCommitted();
 
 							return tryFinishCommit(desiredStatus, transaction); // we failed
 						} else
@@ -47,7 +47,7 @@ bool FraserSTM::doCommit(Transaction* transaction) {
 			}
 
 			if (handle->hasObjectChanged()) {
-				//we fail because a previous/faster transaction commited before we did
+				//we fail because a previous/faster transaction committed before we did
 				TransactionalMemoryManager::instance()->increaseFailedByObjectChanged();
 
 				return tryFinishCommit(desiredStatus, transaction); // we failed
@@ -119,9 +119,9 @@ bool FraserSTM::validateReadOnlyObjects(Transaction* transaction) {
 					}
 				}
 
-				if (competingTransaction->isCommited()) {
-					if (!handle->isCopyEqualToObject()) { // this transaction will commit or already commited a new version we fail
-						TransactionalMemoryManager::instance()->increaseFailedByCompetingCommited();
+				if (competingTransaction->isCommitted()) {
+					if (!handle->isCopyEqualToObject()) { // this transaction will commit or already committed a new version we fail
+						TransactionalMemoryManager::instance()->increaseFailedByCompetingCommitted();
 
 						return false;
 					}

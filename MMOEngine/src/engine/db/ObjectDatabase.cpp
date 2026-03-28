@@ -44,7 +44,7 @@ int ObjectDatabase::getData(uint64 objKey, ObjectInputStream* objectData, uint32
 
 	static const bool mvcc = Core::getIntProperty("BerkeleyDB.MVCC", 0);
 
-	if (lockMode == LockMode::READ_UNCOMMITED && !mvcc) {
+	if (lockMode == LockMode::READ_UNCOMMITTED && !mvcc) {
 		cfg.setReadUncommitted(true);
 	} else if (mvcc) {
 		cfg.setSnapshot(true);

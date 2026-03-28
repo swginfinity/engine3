@@ -53,7 +53,7 @@ void convertDatabase(const String& dbName, const String& targetDirectory) {
 	if (!dir.isEmpty() && !dir.endsWith("/"))
 		dir += "/";
 
-	//config.setReadUncommited(true);
+	//config.setReadUncommitted(true);
 
 	ObjectDatabaseManager::CONVERT_DATABASES = false;
 	ObjectDatabaseManager::instance()->loadDatabases();

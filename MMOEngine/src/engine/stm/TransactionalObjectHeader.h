@@ -227,7 +227,7 @@ namespace engine {
 		assert(object != nullptr);
 #ifdef EAGERABORTS
 		if (transaction != nullptr) {
-			if (!transaction->isCommited())
+			if (!transaction->isCommitted())
 				return transaction_cast<O>(object.get());
 			else
 				throw TransactionAbortedException();
@@ -247,7 +247,7 @@ namespace engine {
 		Transaction* transaction = TransactionalObjectHeader<O>::ownerTransaction;
 
 		if (transaction != nullptr) {
-			 	 if (!transaction->isCommited())
+			 	 if (!transaction->isCommitted())
 			 	 	 return transaction_cast<O>(object.get());
 			 	 else
 			 	 	 throw TransactionAbortedException();

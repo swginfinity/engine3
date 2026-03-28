@@ -80,7 +80,7 @@ void UpdateModifiedObjectsThread::commitTransaction() NO_THREAD_SAFETY_ANALYSIS 
 
 		uint64 delta = clockTimer.stop();
 
-		objectManager->info(true) << "thread " << threadId << " commited objects into database in " << delta / 1000000 << " ms";
+		objectManager->info(true) << "thread " << threadId << " committed objects into database in " << delta / 1000000 << " ms";
 
 		transaction = nullptr;
 
@@ -132,7 +132,7 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 				}
 			}
 
-			objectManager->info(true) << "thread " << threadId << " commited "
+			objectManager->info(true) << "thread " << threadId << " committed "
 				<< commas << objectsToDelete->size() <<  " objects for deletion into ram in " << start.miliDifference(Time::MONOTONIC_TIME) << " ms";
 		}
 	} catch (const Exception& e) {

@@ -148,9 +148,9 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 		objectManager->onCommitData();
 	}
 
-	objectManager->info(true) << "master transaction commited";
+	objectManager->info(true) << "master transaction committed";
 
-	objectManager->checkCommitedObjects();
+	objectManager->checkCommittedObjects();
 
 	objectManager->info(true) << "starting garbage collection for " << objectsToDeleteFromRam->size() << " candidates";
 

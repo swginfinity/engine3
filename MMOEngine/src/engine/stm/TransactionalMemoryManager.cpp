@@ -34,7 +34,7 @@ public:
 	}
 };
 
-//Vector<bool> commitedTrans;
+//Vector<bool> committedTrans;
 AtomicBoolean initializationTransactionStarted;
 
 TransactionalMemoryManager::TransactionalMemoryManager() : Logger("TransactionalMemoryManager"), heapLock(true) {
@@ -57,7 +57,7 @@ TransactionalMemoryManager::TransactionalMemoryManager() : Logger("Transactional
 	task->start();
 
 	/*for (int i = 0; i < 101000; ++i)
-		commitedTrans.add(false);*/
+		committedTrans.add(false);*/
 
 	initializationTransactionStarted = false;
 
@@ -71,7 +71,7 @@ TransactionalMemoryManager::~TransactionalMemoryManager() {
 	/*printf("Undone transactions: ");
 
 	for (unsigned int i = 1; i < transactionID.get(); ++i) {
-		if (!commitedTrans.get(i))
+		if (!committedTrans.get(i))
 			printf("%i ", i);
 	}
 
@@ -144,7 +144,7 @@ Transaction* TransactionalMemoryManager::startTransaction() {
 
 void TransactionalMemoryManager::commitTransaction() {
 	Reference<Transaction*>* transaction = currentTransaction.get();
-	//commitedTrans.set(transaction->getIdentifier(), true);
+	//committedTrans.set(transaction->getIdentifier(), true);
 
 	//debug("Executing tasks: " + String::valueOf(Core::getTaskManager()->getExecutingTaskSize()));
 	Vector<Object*>* objects = getReclamationList();
@@ -152,8 +152,8 @@ void TransactionalMemoryManager::commitTransaction() {
 
 	reclaimObjects(5000, 0);
 
-	commitedTransactions.increment();
-	totalCommitedTransactions.increment();
+	committedTransactions.increment();
+	totalCommittedTransactions.increment();
 
 	if ((*transaction)->getIdentifier() == 1)
 		initializationTransactionStarted.compareAndSet(false, true);
@@ -188,7 +188,7 @@ void TransactionalMemoryManager::reclaim(Object* object) {
 	Reference<Transaction*> transaction = getTransaction();
 
 	if (transaction == nullptr) {
-		//we are out of transaction... transaction probably commited so we are deleting the transaction
+		//we are out of transaction... transaction probably committed so we are deleting the transaction
 		destroy(object);
 	} else {
 		transaction->deleteObject(object);
@@ -308,8 +308,8 @@ void TransactionalMemoryManager::printStatistics() {
 
 	StringBuffer str;
 	str << "transactions(started " << startedTransactions.get() << ", "
-			<< "commited " << commitedTransactions.get() << ", "
-			<< "totalCommited " << totalCommitedTransactions.get() << ", "
+			<< "committed " << committedTransactions.get() << ", "
+			<< "totalCommitted " << totalCommittedTransactions.get() << ", "
 			<< "retried " << retryConflicts.get() << ", "
 			<< "deleted " << deletedTransactions.get() << ", "
 			<< "aborted " << abortedTransactions.get() << ") - tasks ("
@@ -319,17 +319,17 @@ void TransactionalMemoryManager::printStatistics() {
 			<< "deleted handles " << HandleCounter::deletedHandles.get() << ", "*/
 			<< "aborted due exceptions " << failedToExceptions << ", "
 			<< "due to object changed " << failedOnAcquireRW << ", "
-			<< "due to commited competing transaction " << failedCompetingCommited;
+			<< "due to committed competing transaction " << failedCompetingCommitted;
 
 
 	info(str);
 
 	startedTransactions.set(0);
-	commitedTransactions.set(0);
+	committedTransactions.set(0);
 	abortedTransactions.set(0);
 	retryConflicts.set(0);
 	failedToExceptions.set(0);
 	failedOnAcquireRW.set(0);
-	failedCompetingCommited.set(0);
+	failedCompetingCommitted.set(0);
 	deletedTransactions.set(0);
 }

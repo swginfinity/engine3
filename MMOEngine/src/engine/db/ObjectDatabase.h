@@ -27,8 +27,8 @@ namespace engine {
 	public:
 		ObjectDatabase(DatabaseManager* dbEnv, const String& dbFileName, bool compression, DatabaseType databaseType = LocalDatabase::OBJECTDATABASE);
 
-		int getData(uint64 objKey, ObjectInputStream* objectData, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED, bool compressed = false, bool readThreadLocalTransaction = false);
-		int getDataNoTx(uint64 objKey, ObjectInputStream* objectData, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED, bool compressed = false);
+		int getData(uint64 objKey, ObjectInputStream* objectData, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED, bool compressed = false, bool readThreadLocalTransaction = false);
+		int getDataNoTx(uint64 objKey, ObjectInputStream* objectData, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED, bool compressed = false);
 
 		//stream will be deleted
 		int putData(uint64 objKey, Stream* stream, Object* object, engine::db::berkeley::Transaction* masterTransaction = nullptr);
@@ -59,19 +59,19 @@ namespace engine {
 
 		}
 
-		bool getNextKeyAndValue(uint64& key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED, bool compressed = false);
+		bool getNextKeyAndValue(uint64& key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED, bool compressed = false);
 
 		//returns raw compressed data
-		int getNextKeyAndValueMultiple(berkeley::DatabaseEntry& data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED);
+		int getNextKeyAndValueMultiple(berkeley::DatabaseEntry& data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);
 
-		bool getNextKey(uint64& key, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED);
+		bool getNextKey(uint64& key, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);
 
-		bool getSearchKey(uint64 key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED);
-		bool getSearchKeyRange(uint64& key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED);
+		bool getSearchKey(uint64 key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);
+		bool getSearchKeyRange(uint64& key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);
 
-		bool getLastKey(uint64& key, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED);
-		bool getPrevKey(uint64& key, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED);
-		bool getPrevKeyAndValue(uint64& key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED);
+		bool getLastKey(uint64& key, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);
+		bool getPrevKey(uint64& key, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);
+		bool getPrevKeyAndValue(uint64& key, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);
 
 	};
 

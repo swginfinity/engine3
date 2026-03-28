@@ -103,7 +103,7 @@ DOBObjectManager::DOBObjectManager() : Logger("ObjectManager") {
 
 	objectUpdateInProgress = false;
 	totalUpdatedObjects = 0;
-	//commitedObjects.setNoDuplicateInsertPlan();
+	//committedObjects.setNoDuplicateInsertPlan();
 
 	updateModifiedObjectsTask = new UpdateModifiedObjectsTask();
 	//updateModifiedObjectsTask->schedule(UPDATETODATABASETIME);
@@ -283,7 +283,7 @@ int DOBObjectManager::commitUpdatePersistentObjectToDB(DistributedObject* object
 				const static int trackUniqueObjectsSaveDeltas = Core::getIntProperty("ObjectManager.trackUniqueObjectsSaveDeltas", 0);
 
 				if (trackUniqueObjectsSaveDeltas) {
-					commitedObjects.put(object);
+					committedObjects.put(object);
 				}
 			} else {
 				delete objectData;
@@ -808,8 +808,8 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 		ArrayList<DistributedObject* >* objectsToDeleteFromRAM, engine::db::berkeley::Transaction* transaction, int flags) {
 	totalUpdatedObjects = 0;
 	totalActuallyChangedObjects = 0;
-	//commitedObjects.removeAll(localObjectDirectory.getSize(), 1000);
-	commitedObjects.objects.clear();
+	//committedObjects.removeAll(localObjectDirectory.getSize(), 1000);
+	committedObjects.objects.clear();
 
 	int numberOfThreads = 0;
 
@@ -894,7 +894,7 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 int DOBObjectManager::executeDeltaUpdateThreads(UpdateCollection& updateObjects, engine::db::berkeley::Transaction* transaction, int flags) {
 	totalUpdatedObjects = 0;
 	totalActuallyChangedObjects = 0;
-	commitedObjects.objects.clear();
+	committedObjects.objects.clear();
 
 	int currentThread = 0;
 	int objectsToUpdateCount = 0;
@@ -955,7 +955,7 @@ void DOBObjectManager::dispatchUpdateModifiedObjectsThread(int& currentThread, i
 	objectsToUpdateCount = 0;
 }
 
-void DOBObjectManager::SynchronizedCommitedObjects::put(DistributedObject* obj) {
+void DOBObjectManager::SynchronizedCommittedObjects::put(DistributedObject* obj) {
 	Locker locker(&mutex);
 
 	objects.emplace(obj);
@@ -1039,7 +1039,7 @@ int DOBObjectManager::runObjectsMarkedForUpdate(engine::db::berkeley::Transactio
 	return currentThread;
 }
 
-void DOBObjectManager::checkCommitedObjects() {
+void DOBObjectManager::checkCommittedObjects() {
 	const static int trackUniqueObjectsSaveDeltas = Core::getIntProperty("ObjectManager.trackUniqueObjectsSaveDeltas", 0);
 
 	if (!trackUniqueObjectsSaveDeltas) {
@@ -1053,7 +1053,7 @@ void DOBObjectManager::checkCommitedObjects() {
 
 	int i = 0;
 
-	for (auto obj : commitedObjects.objects) {
+	for (auto obj : committedObjects.objects) {
 		++i;
 
 		if (uniqueModifiedObjectValues.find(obj) == uniqueModifiedObjectValues.end()) {
@@ -1074,7 +1074,7 @@ void DOBObjectManager::checkCommitedObjects() {
 	auto elapsedMs = perf.stopMs();
 
 	if (i > 0) {
-		info(true) << "checked " << i << " commited objects vs modified objects in "
+		info(true) << "checked " << i << " committed objects vs modified objects in "
 				<< elapsedMs << " ms";
 	}
 }
@@ -1087,7 +1087,7 @@ void DOBObjectManager::finishObjectUpdate() {
 	updateModifiedObjectsTask->schedule(UPDATETODATABASETIME);
 
 	info(true) << "marked updated objects: " << commas << totalUpdatedObjects
-			<< " commited objects: " << totalActuallyChangedObjects;
+			<< " committed objects: " << totalActuallyChangedObjects;
 
 	saveCount++;
 

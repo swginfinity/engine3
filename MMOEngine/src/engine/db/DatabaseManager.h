@@ -218,7 +218,7 @@ namespace engine {
 		int commitTransaction(engine::db::berkeley::Transaction* transaction);
 		/**
 		 * Stores a references to an object while the transaction is alive
-		 * References will be released when the local transaction is commited
+		 * References will be released when the local transaction is committed
 		 */
 		void addTemporaryObject(Object* object);
 

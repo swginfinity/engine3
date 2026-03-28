@@ -49,10 +49,10 @@ namespace engine {
 		}
 
 		bool setKeyAndGetValue(uint64 key, uint64& primaryKey, ObjectInputStream* data,
-				uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED, bool compressed = false);
+				uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED, bool compressed = false);
 
 		bool getNextKeyAndValue(uint64 key, uint64& primaryKey, ObjectInputStream* data,
-				uint32 lockMode = berkeley::LockMode::READ_UNCOMMITED, bool compressed = false);
+				uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED, bool compressed = false);
 	};
 
   }

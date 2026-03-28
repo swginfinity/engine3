@@ -105,16 +105,16 @@ bool Transaction::commit() NO_THREAD_SAFETY_ANALYSIS {
 
 	//info("Commiting with readOnly:" + String::valueOf(readOnlyObjectsCount) + " and readWrite:" + String::valueOf(readWriteObjectsCount), true);
 
-	bool commited = doCommit();
+	bool committed = doCommit();
 
-	if (commited) {
+	if (committed) {
 		finishCommit();
 
 		commitTime += System::getMikroTime() - startTime;
 
-		/*String msg = "ran and commited in " +
+		/*String msg = "ran and committed in " +
 		  String::valueOf((commitTime + runTime) / 1000) + "ms Task: " + String(TypeInfo<Object>::getClassName(task)) +
-		  " commited (" + String::valueOf(runTime) + "Us / " + String::valueOf(commitTime) + "Us, "
+		  " committed (" + String::valueOf(runTime) + "Us / " + String::valueOf(commitTime) + "Us, "
 				+ String::valueOf(commitAttempts) + " tries, R/W objects "
 				+ readOnlyObjectsCount + " / " + readWriteObjectsCount +")";*/
 	} else {
@@ -127,7 +127,7 @@ bool Transaction::commit() NO_THREAD_SAFETY_ANALYSIS {
 
 	blockLock.runlock();
 
-	return commited;
+	return committed;
 }
 
 void Transaction::finishCommit() {
@@ -275,7 +275,7 @@ void Transaction::deleteObject(Object* object) {
 }
 
 String Transaction::toString() const {
-	return "Transaction [" + Thread::getCurrentThread()->getName() + "] commited in " + Long::toString(commitTime) + " usec";
+	return "Transaction [" + Thread::getCurrentThread()->getName() + "] committed in " + Long::toString(commitTime) + " usec";
 }
 
 bool Transaction::setState(int newstate) {

@@ -150,7 +150,7 @@ namespace engine {
 			return status == ABORTED;
 		}
 
-		inline bool isCommited() const {
+		inline bool isCommitted() const {
 			return status == COMMITTED;
 		}
 
@@ -219,7 +219,7 @@ namespace engine {
 	}
 
 	template<class O> void Transaction::createObject(TransactionalObjectHeader<O>* header) {
-		assert(!isCommited());
+		assert(!isCommitted());
 
 		TransactionalObjectHandle<O>* handle = header->createCreationHandle(this);
 
@@ -251,7 +251,7 @@ namespace engine {
 	}
 
 	template<class O> O Transaction::openObject(TransactionalObjectHeader<O>* header) {
-		assert(!isCommited());
+		assert(!isCommitted());
 
 		TransactionalObjectHandle<O>* handle = openedObjets.get<O>(header);
 
@@ -277,7 +277,7 @@ namespace engine {
 
 	template<class O> O Transaction::openObjectForWrite(TransactionalObjectHeader<O>* header) {
 		//info("opening opbject");
-		assert(!isCommited());
+		assert(!isCommitted());
 
 		TransactionalObjectHandle<O>* handle = openedObjets.get<O>(header);
 

@@ -41,8 +41,8 @@ namespace engine {
 		AtomicLong transactionID;
 
 		AtomicInteger startedTransactions;
-		AtomicInteger commitedTransactions;
-		AtomicInteger totalCommitedTransactions;
+		AtomicInteger committedTransactions;
+		AtomicInteger totalCommittedTransactions;
 		AtomicInteger abortedTransactions;
 		AtomicInteger retryConflicts;
 		AtomicInteger deletedTransactions;
@@ -51,7 +51,7 @@ namespace engine {
 		AtomicInteger failedToResolveConflictReleasedTransaction;
 		AtomicInteger failedToNotUNDECIDED;
 		AtomicInteger failedToExceptions;
-		AtomicInteger failedCompetingCommited;
+		AtomicInteger failedCompetingCommitted;
 
 		/*AtomicInteger createdHandles;
 		AtomicInteger deletedHandles;*/
@@ -117,8 +117,8 @@ namespace engine {
 			failedOnAcquireRW.increment();
 		}
 
-		inline void increaseFailedByCompetingCommited() {
-			failedCompetingCommited.increment();
+		inline void increaseFailedByCompetingCommitted() {
+			failedCompetingCommitted.increment();
 		}
 
 		inline void unblockTransactions() RELEASE(Transaction::blockLock) {

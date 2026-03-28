@@ -22,8 +22,8 @@ namespace engine {
 	class LockMode {
 	public:
 		const static uint32 DEFAULT = 0;
-		const static uint32 READ_COMMITED = DB_READ_COMMITTED;
-		const static uint32 READ_UNCOMMITED = DB_READ_UNCOMMITTED;
+		const static uint32 READ_COMMITTED = DB_READ_COMMITTED;
+		const static uint32 READ_UNCOMMITTED = DB_READ_UNCOMMITTED;
 		const static uint32 RMW = DB_RMW;
 		const static uint32 IGNORE_LEASES = DB_IGNORE_LEASE;
 		const static uint32 MVCC = DB_MULTIVERSION;
@@ -89,7 +89,7 @@ namespace engine {
 				databaseFlags &= ~DB_THREAD;
 		}
 
-		void setReadUncommited(bool value) {
+		void setReadUncommitted(bool value) {
 			if (value)
 				databaseFlags |= DB_READ_UNCOMMITTED;
 			else
