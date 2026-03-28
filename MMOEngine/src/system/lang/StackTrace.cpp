@@ -71,22 +71,18 @@ void StackTrace::print() const {
 		return;
 	}
 
-#ifdef LINE_TRACING
 	StringBuffer command;
 
 #ifdef PLATFORM_MAC
 	command << "atos -p " << Thread::getProcessID();
 #else
-	command << addr2linePath << " -e " << binaryName;
-#endif
+	command << addr2linePath << " -f -C -e " << configBinaryName;
 #endif
 
 	StringBuffer lines;
 	for (int i = 0; i < count; ++i) {
 		if (enableAddr2Line) {
-#ifdef LINE_TRACING
 			command << " " << hex << symbols[i];
-#endif
 		}
 
 		lines << tracedSymbols[i] << endl;
@@ -94,11 +90,9 @@ void StackTrace::print() const {
 
 	free(tracedSymbols);
 
-#ifdef LINE_TRACING
 	if (enableAddr2Line) {
 		auto res = system(command.toString().toCharArray());
 	}
-#endif
 
 	logger.warning(lines.toString());
 #elif defined PLATFORM_CYGWIN
