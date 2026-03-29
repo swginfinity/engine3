@@ -82,7 +82,18 @@ void StackTrace::print() const {
 	StringBuffer lines;
 	for (int i = 0; i < count; ++i) {
 		if (enableAddr2Line) {
-			command << " " << hex << symbols[i];
+			// For PIE binaries, backtrace_symbols returns "binary(+0xOFFSET) [0xADDR]"
+			// Parse the file offset (+0x...) since raw addresses are ASLR'd
+			const char* sym = tracedSymbols[i];
+			const char* offsetStart = strstr(sym, "(+0x");
+			if (offsetStart != nullptr) {
+				// Extract the hex offset after "(+"
+				unsigned long offset = strtoul(offsetStart + 2, nullptr, 16);
+				command << " 0x" << hex << offset;
+			} else {
+				// Fallback to raw address (non-PIE or shared library)
+				command << " " << hex << symbols[i];
+			}
 		}
 
 		lines << tracedSymbols[i] << endl;
@@ -91,7 +102,33 @@ void StackTrace::print() const {
 	free(tracedSymbols);
 
 	if (enableAddr2Line) {
-		auto res = system(command.toString().toCharArray());
+		FILE* pipe = popen(command.toString().toCharArray(), "r");
+		if (pipe != nullptr) {
+			// addr2line outputs pairs of lines: function name, then file:line
+			// Interleave with our backtrace_symbols output
+			char buffer[512];
+			StringBuffer resolved;
+			resolved << "----- Resolved Stack Trace -----" << endl;
+
+			int lineNum = 0;
+			while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+				// Strip trailing newline
+				size_t len = strlen(buffer);
+				if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0';
+
+				if (lineNum % 2 == 0) {
+					// Function name
+					resolved << "  " << buffer;
+				} else {
+					// File:line
+					resolved << " at " << buffer << endl;
+				}
+				lineNum++;
+			}
+			pclose(pipe);
+
+			logger.warning(resolved.toString());
+		}
 	}
 
 	logger.warning(lines.toString());
