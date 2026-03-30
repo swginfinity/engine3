@@ -9,3 +9,4 @@ MMOEngine/lib/unix/libengine3*a
 *.swp
 *~
 compile_commands.json
+MMOEngine/build/unix/cmake_install.cmake
