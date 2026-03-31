@@ -146,6 +146,16 @@ int Lua::atPanic(lua_State* L) {
 		errorMessage = msg;
 	}
 
+	// Capture Lua traceback for debugging — panics normally lose this context
+	luaL_traceback(L, L, nullptr, 1);
+	const char* tb = lua_tostring(L, -1);
+
+	if (tb != nullptr) {
+		errorMessage += "; TRACEBACK: " + String(tb);
+	}
+
+	lua_pop(L, 1);
+
 	throw LuaPanicException("Lua panic: " + errorMessage);
 }
 
