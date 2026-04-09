@@ -10,6 +10,29 @@
 #include "engine/log/Logger.h"
 #include "engine/core/Core.h"
 
+#ifdef PLATFORM_UNIX
+#include <link.h>
+
+// Get the ASLR load base of the main executable (PIE binaries).
+// addr2line needs ELF virtual addresses, not runtime addresses.
+// ELF vaddr = runtime_addr - load_base.
+static unsigned long getMainBinaryBase() {
+	static unsigned long base = 0;
+	static bool initialized = false;
+	if (!initialized) {
+		dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+			if (info->dlpi_name[0] == '\0') {
+				*reinterpret_cast<unsigned long*>(data) = info->dlpi_addr;
+				return 1;
+			}
+			return 0;
+		}, &base);
+		initialized = true;
+	}
+	return base;
+}
+#endif
+
 String StackTrace::binaryName = "core3";
 
 namespace StackTraceNs {
@@ -79,21 +102,16 @@ void StackTrace::print() const {
 	command << addr2linePath << " -f -C -e " << configBinaryName;
 #endif
 
+	unsigned long loadBase = getMainBinaryBase();
+
 	StringBuffer lines;
 	for (int i = 0; i < count; ++i) {
 		if (enableAddr2Line) {
-			// For PIE binaries, backtrace_symbols returns "binary(+0xOFFSET) [0xADDR]"
-			// Parse the file offset (+0x...) since raw addresses are ASLR'd
-			const char* sym = tracedSymbols[i];
-			const char* offsetStart = strstr(sym, "(+0x");
-			if (offsetStart != nullptr) {
-				// Extract the hex offset after "(+"
-				unsigned long offset = strtoul(offsetStart + 2, nullptr, 16);
-				command << " 0x" << hex << offset;
-			} else {
-				// Fallback to raw address (non-PIE or shared library)
-				command << " " << hex << symbols[i];
-			}
+			// Subtract the ASLR load base to get the ELF virtual address
+			// that addr2line can resolve to file:line
+			unsigned long addr = reinterpret_cast<unsigned long>(symbols[i]);
+			unsigned long elfAddr = addr - loadBase;
+			command << " 0x" << hex << elfAddr;
 		}
 
 		lines << tracedSymbols[i] << endl;
