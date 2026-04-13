@@ -196,7 +196,7 @@ lua_State* LuaFunction::callFunction() {
 			return nullptr;
 		}
 	} catch (const LuaPanicException& e) {
-		luaLogger.error() << "LuaPanicException running function " << (getObject().length() ? getObject() + ":" : String("")) << getFunctionName() << " " << String(lua_tostring(getLuaState(), -1));
+		luaLogger.error() << "LuaPanicException running function " << (getObject().length() ? getObject() + ":" : String("")) << getFunctionName() << " " << e.getMessage();
 
 		return nullptr;
 	}
