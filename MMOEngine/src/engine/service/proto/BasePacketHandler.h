@@ -45,7 +45,7 @@ namespace engine {
 		void handleDataChannelPacket(BaseClient* client, Packet* pack);
 		void handleDataChannelMultiPacket(BaseClient* client, Packet* pack, sys::uint16 size);
 
-		int handleFragmentedPacket(BaseClient* client, Packet* pack);
+		int handleFragmentedPacket(BaseClient* client, sys::uint32 seq, Packet* pack);
 
 		void processMessage(Message* msg);
 	};
