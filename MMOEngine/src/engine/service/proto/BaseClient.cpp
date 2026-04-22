@@ -341,6 +341,7 @@ void BaseClient::close() {
 
 		fragmentedPacket = nullptr;
 	}
+	lastFragmentedSeq = -1;
 
 	reportStats("Close");
 
@@ -981,10 +982,36 @@ Packet* BaseClient::getBufferedPacket() {
 	return nullptr;
 }
 
-BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
+BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 	//Logger::console.info("recieveFragmentedPacket " + pack->toStringData(), true);
 
 	BasePacket* packet = nullptr;
+
+	// Fix C: if we have an in-progress message and this fragment's seq is
+	// non-contiguous with the last one we took, the prior message is lost
+	// (retransmit gap, parse failure earlier, client re-issued). Drop the
+	// accumulator CLEANLY and treat this packet as a fresh first-fragment
+	// instead of appending bogus continuation into the old context.
+	if (fragmentedPacket != nullptr && lastFragmentedSeq >= 0) {
+		int64 expected = ((int64) lastFragmentedSeq) + 1;
+		// Seq space is uint32; expected wraps mod 2^32 but for the scale of
+		// a single logical message (~1.5 MB / ~492 bytes per frag ≈ 3K frags)
+		// we will never wrap within one message. Treat any non-contiguous
+		// value as a new-message signal.
+		if ((uint32) seq != (uint32) (expected & 0xFFFFFFFF)) {
+			info() << "fragment seq gap (expected " << expected
+				<< ", got " << seq << ") — discarding stale accumulator and"
+				<< " starting fresh. prior size=" << fragmentedPacket->size();
+
+			if (fragmentedPacket->getReferenceCount())
+				fragmentedPacket->release();
+			else
+				delete fragmentedPacket;
+
+			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
+		}
+	}
 
 	if (fragmentedPacket == nullptr) {
 		fragmentedPacket = new BaseFragmentedPacket();
@@ -1000,9 +1027,14 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 			delete fragmentedPacket;
 
 		fragmentedPacket = nullptr;
+		lastFragmentedSeq = -1;
 
 		throw FragmentedPacketParseException("could not insert frag");
 	}
+
+	// Fragment successfully appended — record its seq for the gap check
+	// on the next fragment.
+	lastFragmentedSeq = (int) seq;
 
 	try {
 		if (fragmentedPacket->isComplete()) {
@@ -1012,6 +1044,7 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 
 			packet = fragmentedPacket;
 			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
 		}
 	} catch (const Exception& e) {
 		if (fragmentedPacket != nullptr) {
@@ -1027,6 +1060,7 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 				delete fragmentedPacket;
 
 			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
 			packet = nullptr;
 		} else {
 			error() << "fragmentedPacket->isComplete() exception: " << e.getMessage() << "; packet: " << *pack;
@@ -1045,6 +1079,7 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 				delete fragmentedPacket;
 
 			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
 			packet = nullptr;
 		} else {
 			error() << "fragmentedPacket->isComplete() exception: unreproted exception caught; packet: " << *pack;

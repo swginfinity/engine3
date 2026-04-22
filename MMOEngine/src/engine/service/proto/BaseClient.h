@@ -61,6 +61,16 @@ namespace engine {
 
 		BaseMultiPacket* bufferedPacket;
 		BaseFragmentedPacket* fragmentedPacket;
+		// Seq of the last fragment we appended to `fragmentedPacket`. Used
+		// to detect when a fragment arrives with a non-contiguous seq —
+		// signalling the prior logical message was abandoned (lost fragment,
+		// parse failure, etc.) and this is a fresh first-fragment. Without
+		// this, a mid-message parse failure caused the server to treat the
+		// remaining continuation fragments as fresh first-fragments and
+		// misread payload bytes as totalSize headers, cascading errors.
+		// Fix C from engine3-frag-handler-research.md. -1 means "no
+		// fragmented message in progress".
+		int lastFragmentedSeq = -1;
 
 		Vector<BasePacket*> sendBuffer;
 #ifdef LOCKFREE_BCLIENT_BUFFERS
@@ -120,7 +130,7 @@ namespace engine {
 
 		Packet* getBufferedPacket();
 
-		BasePacket* receiveFragmentedPacket(Packet* pack);
+		BasePacket* receiveFragmentedPacket(uint32 seq, Packet* pack);
 
 		void run();
 		int sendReliablePackets(int count = 8);

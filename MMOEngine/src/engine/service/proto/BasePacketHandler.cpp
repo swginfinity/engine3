@@ -85,18 +85,24 @@ void BasePacketHandler::handlePacket(BaseClient* client, Packet* pack) {
 
 			processBufferedPackets(client);
 			break;
-		case 0x0D00: //Fragmented
+		case 0x0D00: { //Fragmented
+			// Read the outer reliable-layer seq before validatePacket
+			// consumes it. parseShort(offset) reads without advancing.
+			// Seq sits at offset 2 (right after the 2-byte opcode).
+			uint32 fragSeq = pack->parseShort(2);
+
 			if (!client->processRecieve(pack))
 				return;
 
 			if (!client->validatePacket(pack))
 				return;
 
-			handleFragmentedPacket(client, pack);
+			handleFragmentedPacket(client, fragSeq, pack);
 
 			processBufferedPackets(client);
 
 			break;
+		}
 		case 0x1100: //Out of order
 			if (!client->processRecieve(pack))
 				return;
@@ -279,6 +285,11 @@ void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool
 				AcknowledgeOkMessage::parseOk(pack);
 				break;
 			case 0x0D00: {//Fragmented
+				// Capture the reliable-layer seq before shiftOffset/validatePacket
+				// consumes it. offset is currently pointing at the 2-byte seq
+				// (opcode was parseShort'd at line ~254; cursor is right after).
+				uint32 fragSeq = pack->parseShort(pack->getOffset());
+
 				if (validatePackets) {
 					if (!client->validatePacket(pack))
 						break;
@@ -293,7 +304,7 @@ void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool
 
 				BaseMessage* fragPiece = new BaseMessage(pack, pack->getOffset(), endOffset);
 
-				if (handleFragmentedPacket(client, fragPiece)) {
+				if (handleFragmentedPacket(client, fragSeq, fragPiece)) {
 					client->error() << "could not parse frag in handleMultiPacket: " << *pack <<
 						" with validatePackets:" << validatePackets;
 				}
@@ -345,9 +356,11 @@ void BasePacketHandler::processBufferedPackets(BaseClient* client) {
 
 			handleMultiPacket(client, pack, false);
 		} else if (pack->parseShort(0) == 0x0D00) {
+			// Seq sits at offset 2 (right after the 2-byte opcode).
+			uint32 fragSeq = pack->parseShort(2);
 			pack->setOffset(4);
 			//pack->shiftOffset(4);
-			if (handleFragmentedPacket(client, pack)) {
+			if (handleFragmentedPacket(client, fragSeq, pack)) {
 				client->error() <<
 					"could not parse frag in processBufferedPackets: " << *pack;
 			}
@@ -425,6 +438,8 @@ void BasePacketHandler::handleDataChannelMultiPacket(BaseClient* client, Packet*
 			pack->shiftOffset(blockSize);
 		}
 	} else if (opCount == 0x0D00) {
+		// Seq sits at the current offset before we shift past it.
+		uint32 fragSeq = pack->parseShort(pack->getOffset());
 		pack->shiftOffset(2); // past seq
 
 		int offset = pack->getOffset();
@@ -437,7 +452,7 @@ void BasePacketHandler::handleDataChannelMultiPacket(BaseClient* client, Packet*
 		message->setClient(client);
 		message->setTimeStampMili(System::getMiliTime() + 50);
 
-		if (handleFragmentedPacket(client, message)) {
+		if (handleFragmentedPacket(client, fragSeq, message)) {
 			client->error() <<
 				"could not parse frag in handleDataChannelMultiPacket: " << *pack;
 		}
@@ -473,12 +488,12 @@ void BasePacketHandler::handleDataChannelMultiPacket(BaseClient* client, Packet*
 	}
 }
 
-int BasePacketHandler::handleFragmentedPacket(BaseClient* client, Packet* pack) {
+int BasePacketHandler::handleFragmentedPacket(BaseClient* client, uint32 seq, Packet* pack) {
 //	Logger::console.info("handleFragmentedPacket " + pack->toStringData(), true);
 	//pack must have offset after sequence 0D 00 XX XX HERE
 
 	try {
-		BasePacket* fraggedPacket = client->receiveFragmentedPacket(pack);
+		BasePacket* fraggedPacket = client->receiveFragmentedPacket(seq, pack);
 
 		if (fraggedPacket != nullptr) {
 			handleDataChannelPacket(client, fraggedPacket);
