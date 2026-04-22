@@ -86,13 +86,17 @@ void BasePacketHandler::handlePacket(BaseClient* client, Packet* pack) {
 			processBufferedPackets(client);
 			break;
 		case 0x0D00: { //Fragmented
-			// Read the outer reliable-layer seq before validatePacket
-			// consumes it. parseShort(offset) reads without advancing.
-			// Seq sits at offset 2 (right after the 2-byte opcode).
-			uint32 fragSeq = pack->parseShort(2);
-
 			if (!client->processRecieve(pack))
 				return;
+
+			// Read the outer reliable-layer seq AFTER processRecieve has
+			// decrypted the packet in place. Reading before decryption
+			// would feed encrypted bytes to fix C's gap-detection and
+			// every "contiguity" check would fail, nuking the accumulator
+			// on every fragment. parseShort(offset) doesn't advance
+			// cursor so validatePacket below still sees the expected
+			// state. Seq sits at offset 2 (right after the 2-byte opcode).
+			uint32 fragSeq = pack->parseShort(2);
 
 			if (!client->validatePacket(pack))
 				return;
