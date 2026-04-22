@@ -239,7 +239,17 @@ void BasePacketHandler::doAcknowledge(BaseClient* client, Packet* pack) {
 
 void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool validatePackets) {
 	while (pack->hasData()) {
-		uint8 blockSize = pack->parseByte();
+		// SOE multi-SOE sub-packet length is normally a single byte, but
+		// the protocol supports an extended length form: if the length
+		// byte is 0xFF, the next two bytes (big-endian) are the real
+		// length. Without this, sub-packets >= 255 bytes get truncated
+		// and downstream parsing slides off-boundary — one of the
+		// contributors to the frag-handler parse-drift errors we see
+		// in live core3.log. Fix D from engine3-frag-handler-research.md.
+		uint32 blockSize = pack->parseByte();
+		if (blockSize == 0xFF) {
+			blockSize = pack->parseNetShort();
+		}
 
 		int offset = pack->getOffset();
 
