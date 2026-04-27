@@ -114,6 +114,7 @@ void BaseClient::initializeCommon(const String& addr) {
 	receiveBuffer.setInsertPlan(SortedVector<BasePacket*>::NO_DUPLICATE);
 
 	fragmentedPacket = nullptr;
+	lastFragmentedSeq = -1;
 
 	checkupEvent = nullptr;
 	netcheckupEvent = nullptr;
@@ -341,6 +342,7 @@ void BaseClient::close() {
 
 		fragmentedPacket = nullptr;
 	}
+	lastFragmentedSeq = -1;
 
 	reportStats("Close");
 
@@ -981,10 +983,50 @@ Packet* BaseClient::getBufferedPacket() {
 	return nullptr;
 }
 
-BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
+BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 	//Logger::console.info("recieveFragmentedPacket " + pack->toStringData(), true);
 
 	BasePacket* packet = nullptr;
+
+	// Boundary detection #1: no in-flight accumulator, but a watermark from a
+	// prior poisoned message is still set. A contiguous-seq fragment is a
+	// continuation of that aborted message — drop silently and advance the
+	// watermark. Only when seq jumps non-contiguously is a real new logical
+	// message starting; clear the watermark and fall through to fresh-
+	// fragment handling.
+	if (fragmentedPacket == nullptr && lastFragmentedSeq >= 0) {
+		int64 expected = ((int64) lastFragmentedSeq) + 1;
+		if ((uint32) seq == (uint32) (expected & 0xFFFFFFFF)) {
+			lastFragmentedSeq = (int) seq;
+			return nullptr;
+		}
+		lastFragmentedSeq = -1;
+	}
+
+	// Boundary detection #2: an accumulator exists but is poisoned. Same
+	// contiguous-vs-jump logic, but we must also tear down the poisoned
+	// accumulator object once we hit the boundary so the new fragment
+	// starts a fresh message context.
+	if (fragmentedPacket != nullptr && fragmentedPacket->isPoisoned()) {
+		if (lastFragmentedSeq >= 0) {
+			int64 expected = ((int64) lastFragmentedSeq) + 1;
+			if ((uint32) seq == (uint32) (expected & 0xFFFFFFFF)) {
+				lastFragmentedSeq = (int) seq;
+				return nullptr;
+			}
+		}
+		// Boundary crossed (or watermark was missing) — discard the
+		// poisoned accumulator and treat this fragment as the start of
+		// a new logical message below.
+		if (fragmentedPacket->getReferenceCount())
+			fragmentedPacket->release();
+		else
+			delete fragmentedPacket;
+		fragmentedPacket = nullptr;
+		lastFragmentedSeq = -1;
+	}
+
+	const bool wasFreshAccumulator = (fragmentedPacket == nullptr);
 
 	if (fragmentedPacket == nullptr) {
 		fragmentedPacket = new BaseFragmentedPacket();
@@ -992,17 +1034,39 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 	}
 
 	if (!fragmentedPacket->addFragment(pack)) {
-		error() << "addFragment failed: " << fragmentedPacket->getError() << "; fragmentedPacket: " << *fragmentedPacket << endl << "packet: " << *pack;
+		const bool hostileFirstFragment =
+			wasFreshAccumulator && fragmentedPacket->isPoisonedOnFirstParse();
 
-		if (fragmentedPacket->getReferenceCount())
-			fragmentedPacket->release();
-		else
-			delete fragmentedPacket;
+		error() << "addFragment failed: " << fragmentedPacket->getError()
+			<< "; mid-message=" << (!wasFreshAccumulator)
+			<< "; hostile=" << hostileFirstFragment
+			<< "; fragmentedPacket: " << *fragmentedPacket << endl
+			<< "packet: " << *pack;
 
-		fragmentedPacket = nullptr;
+		if (hostileFirstFragment) {
+			// First parse on a fresh accumulator hit an unreasonable
+			// totalSize. Real corruption fails CRC at the lower layer,
+			// so this looks deliberate. Tear down the connection.
+			if (fragmentedPacket->getReferenceCount())
+				fragmentedPacket->release();
+			else
+				delete fragmentedPacket;
+			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
 
-		throw FragmentedPacketParseException("could not insert frag");
+			throw FragmentedPacketParseException("hostile oversize first-fragment");
+		}
+
+		// Mid-message poison: the accumulator is now flagged poisoned and
+		// will silently drop subsequent fragments. Record this seq so
+		// the boundary detection above can recognize continuations and
+		// skip until the next logical message begins.
+		lastFragmentedSeq = (int) seq;
+		return nullptr;
 	}
+
+	// Successful append — advance the watermark.
+	lastFragmentedSeq = (int) seq;
 
 	try {
 		if (fragmentedPacket->isComplete()) {
@@ -1012,6 +1076,7 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 
 			packet = fragmentedPacket;
 			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
 		}
 	} catch (const Exception& e) {
 		if (fragmentedPacket != nullptr) {
@@ -1027,6 +1092,7 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 				delete fragmentedPacket;
 
 			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
 			packet = nullptr;
 		} else {
 			error() << "fragmentedPacket->isComplete() exception: " << e.getMessage() << "; packet: " << *pack;
@@ -1045,6 +1111,7 @@ BasePacket* BaseClient::receiveFragmentedPacket(Packet* pack) {
 				delete fragmentedPacket;
 
 			fragmentedPacket = nullptr;
+			lastFragmentedSeq = -1;
 			packet = nullptr;
 		} else {
 			error() << "fragmentedPacket->isComplete() exception: unreproted exception caught; packet: " << *pack;

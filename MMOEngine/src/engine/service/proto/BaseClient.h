@@ -62,6 +62,14 @@ namespace engine {
 		BaseMultiPacket* bufferedPacket;
 		BaseFragmentedPacket* fragmentedPacket;
 
+		// Outer reliable-layer seq of the most recently appended (or
+		// most recently rejected) fragment. -1 when no message is in
+		// flight. Used by receiveFragmentedPacket to detect logical-
+		// message boundaries via seq contiguity, so a parse failure
+		// can poison the accumulator without misinterpreting later
+		// continuation bytes as a fresh first-fragment.
+		int lastFragmentedSeq;
+
 		Vector<BasePacket*> sendBuffer;
 #ifdef LOCKFREE_BCLIENT_BUFFERS
 		typedef boost::lockfree::queue<BasePacket*, boost::lockfree::fixed_sized<false> > packet_buffer_t;
@@ -120,7 +128,7 @@ namespace engine {
 
 		Packet* getBufferedPacket();
 
-		BasePacket* receiveFragmentedPacket(Packet* pack);
+		BasePacket* receiveFragmentedPacket(uint32 seq, Packet* pack);
 
 		void run();
 		int sendReliablePackets(int count = 8);

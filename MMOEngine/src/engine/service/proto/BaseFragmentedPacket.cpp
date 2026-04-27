@@ -19,12 +19,14 @@ BaseFragmentedPacket::BaseFragmentedPacket() : BasePacket() {
 	singlePacket = nullptr;
 
 	totalSize = 0;
+	poisoned = false;
 }
 
 BaseFragmentedPacket::BaseFragmentedPacket(BasePacket* pack) : BasePacket() {
 	singlePacket = pack;
 
 	totalSize = 0;
+	poisoned = false;
 }
 
 BaseFragmentedPacket::~BaseFragmentedPacket() {
@@ -33,18 +35,34 @@ BaseFragmentedPacket::~BaseFragmentedPacket() {
 }
 
 bool BaseFragmentedPacket::addFragment(Packet* pack) {
+	// Already-poisoned accumulator: drop silently. The caller is responsible
+	// for detecting message-boundary and discarding this object — feeding it
+	// more bytes after a parse failure is what produces the "size too big"
+	// cascade when continuation bytes get mis-parsed as a fresh totalSize.
+	if (poisoned) {
+		return false;
+	}
+
 	if (totalSize == 0) {
-		totalSize = pack->parseNetInt();
+		int parsed = pack->parseNetInt();
 
-		if (totalSize < 0 || totalSize > MAX_COMPLETE_FRAG_SIZE) {
-			addError() << "received fragmented packet with size too big = (" << totalSize << ") for frag: " << pack->toStringData();
+		if (parsed < 0 || parsed > MAX_COMPLETE_FRAG_SIZE) {
+			addError() << "received fragmented packet with size too big = (" << parsed << ") for frag: " << pack->toStringData();
 
+			// Don't store the unreasonable value into totalSize — leave it
+			// at 0 so isPoisonedOnFirstParse() correctly identifies this
+			// as a hostile-first-fragment failure (no valid message context
+			// was ever established).
+			poisoned = true;
 			return false;
-		} else if (totalSize == 0) {
+		} else if (parsed == 0) {
 			addError() << "fragmented total size totalSize parsed 0!";
 
+			poisoned = true;
 			return false;
 		}
+
+		totalSize = parsed;
 	}
 
 	int packetOffset = pack->getOffset();
@@ -56,6 +74,7 @@ bool BaseFragmentedPacket::addFragment(Packet* pack) {
 
 	if (readBytes < 0) {
 		addError() << "error parsing fragmented packet readBytes < 0";
+		poisoned = true;
 		return false;
 	}
 
