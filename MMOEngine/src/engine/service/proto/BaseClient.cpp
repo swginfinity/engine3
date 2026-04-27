@@ -987,7 +987,31 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 
 	BasePacket* packet = nullptr;
 
-	// Fix C: if we have an in-progress message and this fragment's seq is
+	// Fix C v2: detect a continuation fragment arriving AFTER a prior teardown.
+	// We preserve lastFragmentedSeq across teardowns (instead of resetting to
+	// -1 in v1), so contiguous-with-last-aborted means "skip; this is bogus
+	// continuation payload of a message we've already given up on, not a real
+	// first-fragment." Without this skip, addFragment would treat the
+	// continuation as a fresh first-fragment, parseNetInt would read 4 bytes
+	// of mid-message UTF-16 payload as a totalSize header, fail the
+	// MAX_COMPLETE_FRAG_SIZE bounds check, tear down again, and the cycle
+	// would repeat for every continuation fragment of the aborted message —
+	// the cascade fix C was supposed to prevent but didn't on live 2026-04-27.
+	if (fragmentedPacket == nullptr && lastFragmentedSeq >= 0) {
+		int64 expected = ((int64) lastFragmentedSeq) + 1;
+		if ((uint32) seq == (uint32) (expected & 0xFFFFFFFF)) {
+			// Continuation of an aborted message. Advance the watermark so
+			// the next contiguous fragment is also recognized and skipped,
+			// and return without creating a fresh accumulator.
+			lastFragmentedSeq = (int) seq;
+			return nullptr;
+		}
+		// Non-contiguous → genuine new-message boundary. Reset and fall
+		// through to the normal first-fragment handling below.
+		lastFragmentedSeq = -1;
+	}
+
+	// Fix C v1: if we have an in-progress message and this fragment's seq is
 	// non-contiguous with the last one we took, the prior message is lost
 	// (retransmit gap, parse failure earlier, client re-issued). Drop the
 	// accumulator CLEANLY and treat this packet as a fresh first-fragment
@@ -1027,7 +1051,13 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 			delete fragmentedPacket;
 
 		fragmentedPacket = nullptr;
-		lastFragmentedSeq = -1;
+
+		// Fix C v2 KEY CHANGE: do NOT reset lastFragmentedSeq to -1 here.
+		// Preserve the seq of the fragment that failed so the next contiguous
+		// fragment is recognized as a continuation by the top-of-function
+		// check above and skipped instead of misinterpreted as a fresh
+		// first-fragment. This is what closes the cascade window.
+		lastFragmentedSeq = (int) seq;
 
 		throw FragmentedPacketParseException("could not insert frag");
 	}
