@@ -994,10 +994,13 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 	// watermark. Only when seq jumps non-contiguously is a real new logical
 	// message starting; clear the watermark and fall through to fresh-
 	// fragment handling.
+	//
+	// The reliable-layer seq is 16 bits and wraps 0xFFFF→0x0000. Mask both
+	// sides of the comparison to uint16 so contiguity holds across the wrap.
 	if (fragmentedPacket == nullptr && lastFragmentedSeq >= 0) {
-		int64 expected = ((int64) lastFragmentedSeq) + 1;
-		if ((uint32) seq == (uint32) (expected & 0xFFFFFFFF)) {
-			lastFragmentedSeq = (int) seq;
+		uint16 expected = (uint16) (lastFragmentedSeq + 1);
+		if ((uint16) seq == expected) {
+			lastFragmentedSeq = (int) (uint16) seq;
 			return nullptr;
 		}
 		lastFragmentedSeq = -1;
@@ -1009,9 +1012,9 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 	// starts a fresh message context.
 	if (fragmentedPacket != nullptr && fragmentedPacket->isPoisoned()) {
 		if (lastFragmentedSeq >= 0) {
-			int64 expected = ((int64) lastFragmentedSeq) + 1;
-			if ((uint32) seq == (uint32) (expected & 0xFFFFFFFF)) {
-				lastFragmentedSeq = (int) seq;
+			uint16 expected = (uint16) (lastFragmentedSeq + 1);
+			if ((uint16) seq == expected) {
+				lastFragmentedSeq = (int) (uint16) seq;
 				return nullptr;
 			}
 		}
@@ -1060,13 +1063,14 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 		// Mid-message poison: the accumulator is now flagged poisoned and
 		// will silently drop subsequent fragments. Record this seq so
 		// the boundary detection above can recognize continuations and
-		// skip until the next logical message begins.
-		lastFragmentedSeq = (int) seq;
+		// skip until the next logical message begins. Mask to uint16 to
+		// keep the watermark in canonical 16-bit space.
+		lastFragmentedSeq = (int) (uint16) seq;
 		return nullptr;
 	}
 
-	// Successful append — advance the watermark.
-	lastFragmentedSeq = (int) seq;
+	// Successful append — advance the watermark (uint16 canonical).
+	lastFragmentedSeq = (int) (uint16) seq;
 
 	try {
 		if (fragmentedPacket->isComplete()) {

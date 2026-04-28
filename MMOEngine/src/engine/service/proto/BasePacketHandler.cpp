@@ -87,9 +87,11 @@ void BasePacketHandler::handlePacket(BaseClient* client, Packet* pack) {
 			break;
 		case 0x0D00: { //Fragmented
 			// Read the outer reliable-layer seq before validatePacket
-			// consumes it. parseShort(offset) reads without advancing.
+			// consumes it. parseNetShort(offset) reads without advancing
+			// and converts from network (BE) to host byte order — matches
+			// validatePacket's parseNetShort() at BaseClient.cpp.
 			// Seq sits at offset 2 (right after the 2-byte opcode).
-			uint32 fragSeq = pack->parseShort(2);
+			uint32 fragSeq = pack->parseNetShort(2);
 
 			if (!client->processRecieve(pack))
 				return;
@@ -278,7 +280,8 @@ void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool
 				// Capture the reliable-layer seq before shiftOffset/validatePacket
 				// consumes it. The cursor is currently at the 2-byte seq
 				// (opcode was just read in the loop's switch above).
-				uint32 fragSeq = pack->parseShort(pack->getOffset());
+				// parseNetShort: wire is BE; matches validatePacket.
+				uint32 fragSeq = pack->parseNetShort(pack->getOffset());
 
 				if (validatePackets) {
 					if (!client->validatePacket(pack))
@@ -347,7 +350,8 @@ void BasePacketHandler::processBufferedPackets(BaseClient* client) {
 			handleMultiPacket(client, pack, false);
 		} else if (pack->parseShort(0) == 0x0D00) {
 			// Seq sits at offset 2 (right after the 2-byte opcode).
-			uint32 fragSeq = pack->parseShort(2);
+			// parseNetShort: wire is BE; matches validatePacket.
+			uint32 fragSeq = pack->parseNetShort(2);
 			pack->setOffset(4);
 			//pack->shiftOffset(4);
 			if (handleFragmentedPacket(client, fragSeq, pack)) {
@@ -429,7 +433,8 @@ void BasePacketHandler::handleDataChannelMultiPacket(BaseClient* client, Packet*
 		}
 	} else if (opCount == 0x0D00) {
 		// Seq sits at the current offset before we shift past it.
-		uint32 fragSeq = pack->parseShort(pack->getOffset());
+		// parseNetShort: wire is BE; matches validatePacket.
+		uint32 fragSeq = pack->parseNetShort(pack->getOffset());
 		pack->shiftOffset(2); // past seq
 
 		int offset = pack->getOffset();
