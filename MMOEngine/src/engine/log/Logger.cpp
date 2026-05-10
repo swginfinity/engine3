@@ -593,7 +593,16 @@ LoggerHelper::LoggerHelper(LoggerHelper&& l)
 }
 
 LoggerHelper::~LoggerHelper() {
-	flush(false);
+	// Destructors must never let exceptions escape — std::terminate is called if they do,
+	// killing the process. flush() can throw under FS pressure (FileWriterMkDirException
+	// on per-OID logger directory creation, write failures under throughput pressure).
+	// Swallow to keep the process alive; a dropped log line is acceptable vs aborting live.
+	// Live SIGABRTs traced to this dtor: 2026-05-07 (LoggerHelper flush under leash-loop
+	// log spam) and 2026-05-10 (FileWriterMkDirException from findNextPosition error).
+	try {
+		flush(false);
+	} catch (...) {
+	}
 }
 
 void LoggerHelper::flush(bool clearBuffer) {
