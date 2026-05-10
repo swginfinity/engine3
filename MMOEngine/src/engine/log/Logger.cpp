@@ -5,6 +5,7 @@
 
 #include "Logger.h"
 #include <atomic>
+#include <cstdio>
 
 Reference<FileLogWriter*> Logger::globalLogFile = nullptr;
 
@@ -596,12 +597,17 @@ LoggerHelper::~LoggerHelper() {
 	// Destructors must never let exceptions escape — std::terminate is called if they do,
 	// killing the process. flush() can throw under FS pressure (FileWriterMkDirException
 	// on per-OID logger directory creation, write failures under throughput pressure).
-	// Swallow to keep the process alive; a dropped log line is acceptable vs aborting live.
+	// Don't silently swallow: surface the failure on stderr (which lands in the gdb/screen
+	// console for ops visibility) so a dropped log line still leaves a fingerprint, while
+	// keeping the process alive.
 	// Live SIGABRTs traced to this dtor: 2026-05-07 (LoggerHelper flush under leash-loop
 	// log spam) and 2026-05-10 (FileWriterMkDirException from findNextPosition error).
 	try {
 		flush(false);
+	} catch (const std::exception& e) {
+		std::fprintf(stderr, "[LoggerHelper] flush threw, log line dropped: %s\n", e.what());
 	} catch (...) {
+		std::fprintf(stderr, "[LoggerHelper] flush threw unknown exception, log line dropped\n");
 	}
 }
 
