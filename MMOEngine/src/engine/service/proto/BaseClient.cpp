@@ -1648,7 +1648,7 @@ void BaseClient::notifyReceivedSeed(uint32 seed) {
 }
 
 void BaseClient::disconnect(const String& msg, bool doLock) {
-	error() << "Force disconnect: " << msg;
+	warning() << "Force disconnect: " << msg;
 
 	setError();
 	disconnect(doLock);
