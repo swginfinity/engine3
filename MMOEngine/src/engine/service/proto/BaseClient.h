@@ -94,6 +94,7 @@ namespace engine {
 		int configMaxBufferPacketsTickCount = 500;
 		int configMaxSentPacketsPerTick = 20;
 		int configMaxOutstandingPackets = 5000;
+		int configMaxUnackedSequenceWindow = 50;
 
 		int acknowledgedServerSequence = -1, realServerSequence = 0;
 		int resentPackets = 0;

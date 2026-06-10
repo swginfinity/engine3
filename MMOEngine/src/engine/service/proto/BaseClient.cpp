@@ -71,6 +71,12 @@ namespace {
 		return value;
 	}
 
+	int getMaxUnackedSequenceWindow() {
+		// Pause draining sendBuffer once this many sequenced packets are unacked.
+		// Throughput ceiling per client ~= window * maxRawPacketSize / RTT.
+		return CACHED_PROPERTY_VALUE(int, Core::getIntProperty, 50, "BaseClient.maxUnackedSequenceWindow");
+	}
+
 	int getMaxCheckupTime() {
 		return CACHED_PROPERTY_VALUE(int, Core::getIntProperty, 2000, "BaseClient.maxCheckupTime");
 	}
@@ -259,6 +265,13 @@ void BaseClient::configureClient(bool force) {
 	if (configMaxOutstandingPackets != newMaxOutstandingPackets) {
 		configMaxOutstandingPackets = newMaxOutstandingPackets;
 		info() << "configureClient: configMaxOutstandingPackets=" << configMaxOutstandingPackets;
+	}
+
+	auto newMaxUnackedSequenceWindow = getMaxUnackedSequenceWindow();
+
+	if (configMaxUnackedSequenceWindow != newMaxUnackedSequenceWindow) {
+		configMaxUnackedSequenceWindow = newMaxUnackedSequenceWindow;
+		info() << "configureClient: configMaxUnackedSequenceWindow=" << configMaxUnackedSequenceWindow;
 	}
 
 	configVersion = currentConfigVersion;
@@ -869,7 +882,7 @@ BasePacket* BaseClient::getNextSequencedPacket() {
 		debug(msg);
 	#endif*/
 
-	if (serverSequence - acknowledgedServerSequence > 50) { //originally 25
+	if (serverSequence - acknowledgedServerSequence > configMaxUnackedSequenceWindow) { //originally 25, then 50
 #ifndef LOCKFREE_BCLIENT_BUFFERS
 		if ((!sendBuffer.isEmpty() || bufferedPacket != nullptr) && !reentrantTask->isScheduled())
 			reentrantTask->scheduleInIoScheduler(10);
