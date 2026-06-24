@@ -293,7 +293,52 @@ Vector<Pair<Locker*, TaskWorkerThread*>>* TaskManagerImpl::blockTaskManager() {
 
 	debug("blocking task manager");
 
+	// Bounded save barrier: when > 0, each blockMutex is acquired with this timeout (ms)
+	// instead of blocking forever. If any acquisition times out, the whole barrier aborts
+	// cleanly (releases what it took, clears every pause flag) and returns nullptr — the
+	// caller then skips this save cycle and reschedules. 0 = original block-forever behavior.
+	const static uint64 blockTimeoutMs = Core::getIntProperty("TaskManager.saveBlockTimeoutMs", 0);
+
 	auto lockers = new Vector<Pair<Locker*, TaskWorkerThread*>>();
+
+	// Abort path: clear EVERY pause flag we may have set (loop-1 workers + scheduler loops),
+	// release every locker already taken, discard the vector, return nullptr. Idempotent.
+	auto abortBarrier = [&]() -> Vector<Pair<Locker*, TaskWorkerThread*>>* {
+		for (int i = 0; i < workers.size(); ++i) {
+			TaskWorkerThread* w = workers.get(i);
+
+			if (w->doBlockWorkerDuringSave())
+				w->setPause(false);
+		}
+
+		for (int i = 0; i < schedulers.size(); ++i)
+			schedulers.get(i)->setPause(false);
+
+		for (int i = 0; i < ioSchedulers.size(); ++i)
+			ioSchedulers.get(i)->setPause(false);
+
+		for (int i = 0; i < lockers->size(); ++i)
+			delete lockers->get(i).first;
+
+		delete lockers;
+
+		error() << "blockTaskManager: timed out after " << blockTimeoutMs
+				<< "ms acquiring a blockMutex; aborting save barrier (a worker is busy/stuck)";
+
+		return nullptr;
+	};
+
+	// Acquire one blockMutex, honoring the timeout. Returns nullptr on timeout. With a timeout,
+	// the held mutex is wrapped via the adopt-Locker so unblockTaskManager still releases it.
+	auto acquireBlock = [&](Mutex* blockMutex) -> Locker* {
+		if (blockTimeoutMs == 0)
+			return new Locker(blockMutex);
+
+		if (!blockMutex->tryLock(blockTimeoutMs))
+			return nullptr;
+
+		return new Locker(blockMutex, Locker::ADOPT_LOCK);
+	};
 
 	//signal pause
 	for (int i = 0; i < workers.size(); ++i) {
@@ -317,7 +362,11 @@ Vector<Pair<Locker*, TaskWorkerThread*>>* TaskManagerImpl::blockTaskManager() {
 
 		Mutex* blockMutex = worker->getBlockMutex();
 
-		Locker* locker = new Locker(blockMutex);
+		Locker* locker = acquireBlock(blockMutex);
+
+		if (locker == nullptr)
+			return abortBarrier();
+
 		lockers->emplace(locker, worker);
 
 		worker->setPause(false);
@@ -334,7 +383,11 @@ Vector<Pair<Locker*, TaskWorkerThread*>>* TaskManagerImpl::blockTaskManager() {
 
 		Mutex* blockMutex = scheduler->getBlockMutex();
 
-		Locker* locker = new Locker(blockMutex);
+		Locker* locker = acquireBlock(blockMutex);
+
+		if (locker == nullptr)
+			return abortBarrier();
+
 		lockers->emplace(locker, nullptr);
 
 		scheduler->setPause(false);
@@ -351,7 +404,11 @@ Vector<Pair<Locker*, TaskWorkerThread*>>* TaskManagerImpl::blockTaskManager() {
 
 		Mutex* blockMutex = scheduler->getBlockMutex();
 
-		Locker* locker = new Locker(blockMutex);
+		Locker* locker = acquireBlock(blockMutex);
+
+		if (locker == nullptr)
+			return abortBarrier();
+
 		lockers->emplace(locker, nullptr);
 
 		scheduler->setPause(false);
