@@ -447,6 +447,18 @@ void DOBObjectManager::updateModifiedObjectsToDatabase(int flags) {
 
 	UniqueReference<Vector<Pair<Locker*, TaskWorkerThread*>>*> lockers(Core::getTaskManager()->blockTaskManager());
 
+	// Bounded save barrier (TaskManager.saveBlockTimeoutMs > 0): a worker was busy/stuck past the
+	// timeout, so the barrier aborted instead of wedging the server. Skip this save cycle and
+	// reschedule. objectUpdateInProgress is not yet set here, so there is nothing to clear.
+	if (lockers == nullptr) {
+		error("updateModifiedObjectsToDatabase: save barrier aborted (a worker did not quiesce in time); skipping this save and rescheduling");
+
+		if (!updateModifiedObjectsTask->isScheduled())
+			updateModifiedObjectsTask->schedule(UPDATETODATABASETIME);
+
+		return;
+	}
+
 	info(true) << "waited for task manager to stop for " << nsToString(stopWaitTimer.stop());
 
 	Locker _locker(this);

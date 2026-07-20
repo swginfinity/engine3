@@ -50,6 +50,14 @@ namespace sys {
 			  }
 		  }
 
+		  // Adopt a Mutex the current thread already holds (e.g. acquired via tryLock):
+		  // does NOT lock here; the destructor unlocks it normally. Used by the bounded
+		  // save-barrier path, which must tryLock(timeout) yet still release via Locker.
+		  enum AdoptLockTag { ADOPT_LOCK };
+		  Locker(Mutex* lock, AdoptLockTag) NO_THREAD_SAFETY_ANALYSIS {
+			  lockable = lock;
+		  }
+
 		  Locker(ReadWriteLock* lock) ACQUIRE(lock) {
 			  const auto doLock = !lock->isLockedByCurrentThread();
 
