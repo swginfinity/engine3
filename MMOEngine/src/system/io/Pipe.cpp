@@ -73,29 +73,48 @@ int Pipe::readLine(char* buf, int len) {
 		return 0;
 	}
 
-	// The loop must never advance buf past buf[len - 1]: the terminator below is
-	// written unconditionally, so a full-length line (or a newline landing in the
-	// final slot, which also advances buf) previously left buf pointing one PAST
-	// the caller's buffer and wrote a zero there.
+	// (1) MEMORY SAFETY. The loop must never advance buf past buf[len - 1]: the
+	// terminator below is written unconditionally, so a full-length line (or a
+	// newline landing in the final slot, which also advances buf) previously left
+	// buf pointing one PAST the caller's buffer and wrote a zero there.
 	//
-	// Every caller passes a fixed stack array and its exact size -- e.g.
-	// GdbStub::writeOutput/parseOutput (char[4096], 4096) and
-	// ServerCore::handleCommands (char[256], 256) -- so that was a one-byte
-	// out-of-bounds stack write, silently corrupting an adjacent local or
-	// tripping the stack protector depending on frame layout.
+	// Every caller passes a fixed stack array and its exact size -- GdbStub
+	// writeOutput/parseOutput (char[4096], 4096) and ServerCore::handleCommands
+	// (char[256], 256) -- so that was a one-byte out-of-bounds stack write,
+	// silently corrupting an adjacent local or tripping the stack protector
+	// depending on frame layout.
 	//
-	// Reserving the last byte for the terminator makes an overlong line truncate
-	// at len - 1 instead. Behaviour is byte-identical for any line that fits;
-	// only the previously-corrupting case differs. The unread remainder is left
-	// in the pipe exactly as before -- callers that must not act on a split line
-	// are responsible for detecting truncation, since for GdbStub a split is
-	// harmless.
+	// (2) RETURN VALUE = BYTES CONSUMED, not non-newline characters.
+	// Every caller loops on `readLine(...) > 0`, so the return has to mean "did
+	// this call make progress", and the old count could not express that: it
+	// excluded the newline, making a bare newline indistinguishable from EOF.
+	// Two data-loss bugs followed, both fixed by counting consumed bytes.
+	//
+	//   a) PRE-EXISTING: any blank line returned 0, so GdbStub's drain loop
+	//      treated it as EOF and discarded ALL remaining output. Every captured
+	//      backtrace was silently truncated at its first empty line.
+	//   b) INTRODUCED BY (1) IF COUNT EXCLUDED THE NEWLINE: reserving the
+	//      terminator slot defers a newline that previously fit, so a line of
+	//      exactly len-1 characters made the NEXT call return 0 and stop the
+	//      loop at that exact boundary.
+	//
+	// Only genuine EOF now returns 0. Callers reading content take it from the
+	// NUL-terminated buffer, not the count, so none of the three is affected by
+	// the changed number: GdbStub uses String(line), ServerCore tests `if (!len)`
+	// and then trims the buffer.
+	//
+	// The unread remainder of an overlong line is still left in the pipe. That is
+	// fine for GdbStub (a split long line reassembles on write), but a caller that
+	// must not act on a fragment -- ServerCore, which executes these as commands --
+	// has to detect the filled-buffer-without-newline case and reject the whole
+	// line rather than run its prefix.
 	for (; count < len - 1; ++count, ++buf) {
 		if (read(buf, 1) == 0)
 			break;
 
 		if (*buf == '\n') {
 			++buf;
+			++count;   // count the newline: it was consumed
 			break;
 		}
 	}
