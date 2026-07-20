@@ -69,7 +69,28 @@ int Pipe::readInt() {
 int Pipe::readLine(char* buf, int len) {
 	int count = 0;
 
-	for (; count < len; ++count, ++buf) {
+	if (len <= 0) {
+		return 0;
+	}
+
+	// The loop must never advance buf past buf[len - 1]: the terminator below is
+	// written unconditionally, so a full-length line (or a newline landing in the
+	// final slot, which also advances buf) previously left buf pointing one PAST
+	// the caller's buffer and wrote a zero there.
+	//
+	// Every caller passes a fixed stack array and its exact size -- e.g.
+	// GdbStub::writeOutput/parseOutput (char[4096], 4096) and
+	// ServerCore::handleCommands (char[256], 256) -- so that was a one-byte
+	// out-of-bounds stack write, silently corrupting an adjacent local or
+	// tripping the stack protector depending on frame layout.
+	//
+	// Reserving the last byte for the terminator makes an overlong line truncate
+	// at len - 1 instead. Behaviour is byte-identical for any line that fits;
+	// only the previously-corrupting case differs. The unread remainder is left
+	// in the pipe exactly as before -- callers that must not act on a split line
+	// are responsible for detecting truncation, since for GdbStub a split is
+	// harmless.
+	for (; count < len - 1; ++count, ++buf) {
 		if (read(buf, 1) == 0)
 			break;
 
@@ -79,9 +100,7 @@ int Pipe::readLine(char* buf, int len) {
 		}
 	}
 
-	if (len) {
-		*buf = 0;
-	}
+	*buf = 0;
 
 	return count;
 }
