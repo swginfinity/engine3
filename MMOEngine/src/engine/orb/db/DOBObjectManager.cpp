@@ -828,7 +828,20 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 	const static int reportTopInRam = Core::getIntProperty("ObjectManager.reportTopInRam", 20);
 	const static bool alwaysReportTopInRam = Core::getIntProperty("ObjectManager.AlwaysReportTopInRam", 0);
 
-	if (alwaysReportTopInRam) {
+	// Periodic census WITHOUT a manual save. The class tally is built inside the map walk
+	// this save is already doing, so the only cost is the walk getting slower: measured
+	// 190 ms -> 5.657 s at 1.64M objects. That is why AlwaysReportTopInRam is not simply
+	// switched on -- at a 300 s save interval it would add ~5 s of task-manager-stopped
+	// time every cycle. Every Nth save amortises it: 12 is hourly at the default interval.
+	// 0 (default) keeps the old behaviour exactly.
+	const static int reportEverySaves = Core::getIntProperty("ObjectManager.ReportTopInRamEverySaves", 0);
+
+	// compareAndSet, not get()+set(): two saves can be in flight from different callers
+	// (the timer and a console `save`), and a plain read-then-clear would let both take
+	// the arm and pay the 5 s walk twice for one request.
+	const bool armedByRequest = reportInRamNextSave.compareAndSet(true, false);
+
+	if (alwaysReportTopInRam || armedByRequest || (reportEverySaves > 0 && (saveCount % reportEverySaves) == 0)) {
 		flags |= SAVE_REPORT;
 	}
 
@@ -875,13 +888,19 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 		int percentPersistent = (double)(TotalIsPersistent) / total * 100;
 		int percentNotPersistent = (double)TotalIsNotPersistent / total * 100;
 
-		info(true) << "InRamObjects:" << commas
+		// warning(), not info(true): forcedLog only forces the CONSOLE print -- the file
+		// still goes through the level filter, and INFO(4) is above our LogFileLevel(3) on
+		// both TC and live, so every census ever taken existed only in screen scrollback
+		// and had to be scraped before it rolled off. WARNING(2) passes the filter, which
+		// is what makes this a series in core3.log instead of a screenshot. (MrO 2026-08-29:
+		// "we should have a console command or something that outputs to core3.log".)
+		warning() << "InRamObjects:" << commas
 			<< " total=" << total
 			<< "; isPersistent=" << TotalIsPersistent << " (" << percentPersistent << "%)"
 			<< "; isNotPersistent=" << TotalIsNotPersistent << " (" << percentNotPersistent << "%)"
 			;
 
-		info(true) << "Top " << reportTopInRam << " objects in RAM:";
+		warning() << "Top " << reportTopInRam << " objects in RAM:";
 
 		auto valWidth = String::withCommas(max).length();
 
@@ -896,7 +915,7 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 				<< std::setw(valWidth) << valCommas.toCharArray() << "  "
 				<< name.toCharArray();
 
-			info(true) << row.str();
+			warning() << row.str();
 		}
 	}
 

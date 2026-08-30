@@ -70,6 +70,14 @@ namespace engine {
 		int saveCount = 0;
 		int saveDeltaCount = 0;
 
+		// Armed by requestInRamReportNextSave(); consumed by the next scheduled save.
+		// This exists so an operator NEVER has to fire a manual `save ... report` to get
+		// an in-RAM census: forcing a save puts a second one into the same task-manager-
+		// stopping path the 5-minute timer already drives, which is the shape behind the
+		// save-vs-slowQueue deadlock we have never been able to reproduce on demand.
+		// Arming instead costs at most one save interval and cannot overlap by construction.
+		AtomicBoolean reportInRamNextSave;
+
 		static int UPDATETODATABASETIME;
 		static bool dumpLastModifiedTraces;
 
@@ -91,8 +99,22 @@ namespace engine {
 
 		void createBackup(int flags = SAVE_DELTA);
 
+		// Ask the NEXT scheduled save to emit the in-RAM class census. Does not save
+		// anything itself and does not block; returns immediately.
+		void requestInRamReportNextSave() {
+			reportInRamNextSave.set(true);
+		}
+
+		bool isInRamReportArmed() const {
+			return reportInRamNextSave.get();
+		}
+
 		static void setUpdateToDatabaseTime(int value) {
 			UPDATETODATABASETIME = value;
+		}
+
+		static int getUpdateToDatabaseTime() {
+			return UPDATETODATABASETIME;
 		}
 
 		static void setDumpLastModifiedTraces(bool val) {
