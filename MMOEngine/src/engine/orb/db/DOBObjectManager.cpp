@@ -836,10 +836,14 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 	// 0 (default) keeps the old behaviour exactly.
 	const static int reportEverySaves = Core::getIntProperty("ObjectManager.ReportTopInRamEverySaves", 0);
 
-	// compareAndSet, not get()+set(): two saves can be in flight from different callers
-	// (the timer and a console `save`), and a plain read-then-clear would let both take
-	// the arm and pay the 5 s walk twice for one request.
-	const bool armedByRequest = reportInRamNextSave.compareAndSet(true, false);
+	// READ the arm here; it is CLEARED only after a census has actually been emitted (below).
+	// Consuming it at this point looked safer but silently eats the request in two real
+	// configurations, found by both free review lanes independently: reportTopInRam <= 0
+	// makes the tally never get BUILT (the nullptr branch below), and an empty tally makes
+	// it never get EMITTED -- in both cases the operator was told "ARMED ... grep core3.log"
+	// and would get nothing, with no error and no trace. Clearing on emission means the
+	// worst case is a duplicate census rather than a lost one.
+	const bool armedByRequest = reportInRamNextSave.get();
 
 	if (alwaysReportTopInRam || armedByRequest || (reportEverySaves > 0 && (saveCount % reportEverySaves) == 0)) {
 		flags |= SAVE_REPORT;
@@ -917,6 +921,11 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 
 			warning() << row.str();
 		}
+
+		// The request is satisfied only now, with the rows actually written. See the note at
+		// the read above: clearing at decision time loses the census whenever it turns out
+		// not to be emittable.
+		reportInRamNextSave.set(false);
 	}
 
 	return numberOfThreads;
