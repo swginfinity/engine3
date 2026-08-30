@@ -421,8 +421,15 @@ void DOBObjectManager::updateModifiedObjectsToDatabase(int flags) {
 		<< ((flags & SAVE_REPORT) ? " with report" : "")
 		<< ((flags & SAVE_JSON) ? " with ram json dump" : "");
 
-	const static int saveMode = Core::getIntProperty("ObjectManager.saveMode", 0);
-	const static uint32 saveDeltas = Core::getIntProperty("ObjectManager.saveDeltas", 0);
+	// NOT `const static`, for the same reason as the census keys in executeUpdateThreads():
+	// a static local latches the boot value, while the `objstats` console command reads these
+	// two keys LIVE (ServerCore.cpp) to tell the operator how long the armed census will take
+	// to appear. Latched here and live there, a runtime config change makes the console
+	// under- or over-promise -- boot saveMode=1/saveDeltas=11 then a runtime saveMode=0 has
+	// the console say "~300 s" while this side still waits twelve save intervals. One property
+	// lookup per save keeps the two in agreement.
+	const int saveMode = Core::getIntProperty("ObjectManager.saveMode", 0);
+	const uint32 saveDeltas = Core::getIntProperty("ObjectManager.saveDeltas", 0);
 
 	Vector<DistributedObject*> objectsToUpdate;
 	Vector<DistributedObject*> objectsToDelete;
@@ -825,16 +832,21 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 
 	int numberOfThreads = 0;
 
-	const static int reportTopInRam = Core::getIntProperty("ObjectManager.reportTopInRam", 20);
-	const static bool alwaysReportTopInRam = Core::getIntProperty("ObjectManager.AlwaysReportTopInRam", 0);
+	// NOT `const static`: these are latched-once-per-process if they are, while the `objstats`
+	// console command reads the same keys live on every invocation -- so after a runtime
+	// `PUT /v1/admin/config/Engine3/ObjectManager/reportTopInRam` (APIProxyConfigManager.cpp,
+	// Core::setProperty) the console would arm a census against a value this function cannot
+	// see, tell the operator it was armed, and never emit one. Reading them here costs one
+	// property lookup per FULL save (i.e. once per save interval) and keeps the two agreeing.
+	const int reportTopInRam = Core::getIntProperty("ObjectManager.reportTopInRam", 20);
+	const bool alwaysReportTopInRam = Core::getIntProperty("ObjectManager.AlwaysReportTopInRam", 0);
 
 	// Periodic census WITHOUT a manual save. The class tally is built inside the map walk
 	// this save is already doing, so the only cost is the walk getting slower: measured
 	// 190 ms -> 5.657 s at 1.64M objects. That is why AlwaysReportTopInRam is not simply
 	// switched on -- at a 300 s save interval it would add ~5 s of task-manager-stopped
-	// time every cycle. Every Nth save amortises it: 12 is hourly at the default interval.
-	// 0 (default) keeps the old behaviour exactly.
-	const static int reportEverySaves = Core::getIntProperty("ObjectManager.ReportTopInRamEverySaves", 0);
+	// time every cycle. Every Nth one amortises it. 0 (default) keeps the old behaviour.
+	const int reportEverySaves = Core::getIntProperty("ObjectManager.ReportTopInRamEverySaves", 0);
 
 	// READ the arm here; it is CLEARED only after a census has actually been emitted (below).
 	// Consuming it at this point looked safer but silently eats the request in two real
@@ -845,7 +857,18 @@ int DOBObjectManager::executeUpdateThreads(ArrayList<DistributedObject*>* object
 	// worst case is a duplicate census rather than a lost one.
 	const bool armedByRequest = reportInRamNextSave.get();
 
-	if (alwaysReportTopInRam || armedByRequest || (reportEverySaves > 0 && (saveCount % reportEverySaves) == 0)) {
+	// 🔴 Count REPORTING OPPORTUNITIES, not saves. This function runs on FULL saves only;
+	// `saveCount` is bumped in finishObjectUpdate() after EVERY save, delta ones included.
+	// So with ObjectManager.saveMode set and saveDeltas = D, full saves land exactly on
+	// saveCount = D (mod D+1) -- and `saveCount % N == 0` is then solvable only when
+	// gcd(D+1, N) == 1. D=11 with N=12 (the pairing that was documented as "hourly") has
+	// NO solution at all: the series was silently dead, with no error and no census ever.
+	// A counter incremented here has no such interaction, and pre-incrementing means "every
+	// Nth" is literally true -- the old form fired on the first full save after boot, when
+	// the object map is still filling and the census is not a usable baseline.
+	const bool reportThisSave = reportEverySaves > 0 && (++reportSaveCount % reportEverySaves) == 0;
+
+	if (alwaysReportTopInRam || armedByRequest || reportThisSave) {
 		flags |= SAVE_REPORT;
 	}
 

@@ -70,6 +70,10 @@ namespace engine {
 		int saveCount = 0;
 		int saveDeltaCount = 0;
 
+		// Counts FULL saves (reporting opportunities) for ObjectManager.ReportTopInRamEverySaves.
+		// Deliberately NOT saveCount, which counts delta saves too -- see executeUpdateThreads().
+		int reportSaveCount = 0;
+
 		// Armed by requestInRamReportNextSave(); consumed by the next scheduled save.
 		// This exists so an operator NEVER has to fire a manual `save ... report` to get
 		// an in-RAM census: forcing a save puts a second one into the same task-manager-
