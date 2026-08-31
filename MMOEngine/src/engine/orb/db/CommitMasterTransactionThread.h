@@ -45,6 +45,12 @@ namespace engine {
 		void commitData() NO_THREAD_SAFETY_ANALYSIS;
 
 		int garbageCollect(DOBObjectManager* objectManager);
+
+		// Writes bin/log/last-successful-save after a master transaction that ACTUALLY committed.
+		// Never throws into the commit thread (Thread::run has no catch); every failure leaves the
+		// PREVIOUS marker in place, so the guard degrades to "stale" (reads as a stall) rather than
+		// to a fresh-mtime lie.
+		void writeSuccessfulSaveMarker(DOBObjectManager* objectManager);
 	};
 
   } // namespace ORB

@@ -21,6 +21,10 @@
 #include "system/io/FileWriter.h"
 
 #include <cstdio>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
 
 CommitMasterTransactionThread::CommitMasterTransactionThread() : Logger("CommitMasterTransactionThread") {
 	transaction = nullptr;
@@ -161,7 +165,24 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 		objectManager->onCommitData();
 	}
 
-	objectManager->info(true) << "master transaction committed";
+	// 🔴 GATED 2026-08-31 (review finding, free lanes + Opus, both independently). This line
+	// used to print UNCONDITIONALLY -- outside the rootBroker block and regardless of
+	// commitRet -- which is the exact defect bdb5d1a4's own message claimed to have fixed
+	// and did not. The return was captured for the marker only, so on a failed commit the
+	// console still said "master transaction committed" and the scrollback detector that
+	// this whole change exists to replace still read a SUCCESS on a failed save.
+	if (!rootBroker) {
+		objectManager->info(true) << "master transaction complete (non-root broker, no local commit)";
+	} else if (commitRet == 0) {
+		objectManager->info(true) << "master transaction committed";
+	} else {
+		// Console-only, deliberately matching the level of the success line it replaces; the
+		// authoritative failure record is commitTransaction's own error() with db_strerror
+		// (DatabaseManager.cpp:517-519). Control flow is still UNCHANGED -- acting on a
+		// failed commit is GH-2198 and remains out of scope.
+		objectManager->error() << "master transaction FAILED to commit, ret " << commitRet
+			<< " -- this cycle's changes are NOT on disk (see the db_strerror line above)";
+	}
 
 	objectManager->checkCommittedObjects();
 
@@ -173,28 +194,6 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 
 	objectManager->finishObjectUpdate();
 
-	// 🔴 THE ONE SAVE-PATH LINE THAT REACHES core3.log, AND THE LEVEL IS THE WHOLE POINT.
-	// Every other line in this cycle is info(true): `forcedLog` forces only the CONSOLE
-	// print, while the file still goes through the level filter, and INFO(4) is above our
-	// LogFileLevel(3) on both TC and live. So the entire save cycle has only ever existed
-	// in screen scrollback, which is why detecting the 2026-08-30 six-hour stall required
-	// scraping a screen buffer -- and why a gdb session that flooded that buffer later
-	// blinded the detector mid-incident. log() is LogLevel::LOG(3), which passes the file
-	// filter. Do NOT "tidy" this to info(true); that silently returns it to console-only.
-	//
-	// warning() would also reach the file, but this is a routine success and the sampler
-	// counts WARNING/ERROR lines -- a heartbeat at WARNING would manufacture alert noise
-	// 288 times a day. LOG lands in the file and stays out of those counters.
-	//
-	// Deliberately terse (MrO 2026-08-31: "I would like to see every 5 minutes that the
-	// backup succeeded, don't need all the details"). The counts stay on the console line
-	// in finishObjectUpdate(). A FAILED commit already reports itself: commitTransaction
-	// logs error() with db_strerror (DatabaseManager.cpp:517-519), and ERROR(1) passes the
-	// file filter too -- so the file gets a success heartbeat or a loud failure, and a
-	// STALL is the absence of both.
-	//
-	// Only on the root broker: a non-root broker performs no local commit, so printing a
-	// durability line there would assert something this process did not do.
 	// 🔴 A MARKER FILE, NOT A LOG LINE -- and the reason is that core3.log cannot carry a
 	// heartbeat. Its flush is gated on `syncGlobalLog || forceSync` (Logger.cpp:270), and
 	// `syncGlobalLog` is initialised false (Logger.cpp:22) and CONFIG-CONTROLLED, not
@@ -222,9 +221,23 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 	// run never manages to write.
 	//
 	// FAILURE is deliberately NOT written here: commitTransaction already logs error() with
-	// db_strerror (DatabaseManager.cpp:517-519) and ERROR(1) passes the file-level filter.
-	// So a failure is loud in core3.log, a success refreshes this file, and a STALL is the
-	// absence of both -- which is exactly the signal that did not exist on 2026-08-30.
+	// db_strerror (DatabaseManager.cpp:517-519), and this function now logs its own error()
+	// on a non-zero commitRet.
+	// ⚠️ CORRECTED 2026-08-31 -- an earlier version of this comment said "a failure is LOUD in
+	// core3.log", and that is FALSE in the way that matters. Logger::error() calls
+	// log(msg, LogLevel::ERROR) with forceSync defaulting FALSE (Logger.cpp:283-291); only
+	// fatal() passes true. So an ERROR line goes into the SAME buffered globalLogFile,
+	// behind the SAME `syncGlobalLog || forceSync` flush gate (Logger.cpp:270) that this
+	// comment cites two paragraphs up as the reason a heartbeat cannot live in core3.log.
+	// It therefore carries the same unbounded, inversely-load-dependent latency, and it is
+	// lost outright if the process aborts before the buffer fills. error() DOES write to the
+	// console immediately (System::err ... << flush), so the failure is loud on the SCREEN --
+	// which is precisely the scrollback channel that got blinded mid-incident on 2026-08-30.
+	// 🔴 CONSEQUENCE, STATED PLAINLY RATHER THAN PAPERED OVER: the marker gives us a reliable
+	// SUCCESS signal and a reliable STALL signal (its absence). It does NOT give us a
+	// reliable FAILURE signal. A monitor must treat marker staleness as the trigger and must
+	// not wait for an error line that may never reach disk. Making the failure durable is
+	// GH-2198 and is not attempted here.
 	//
 	// 🔴 THIS MUST NEVER THROW INTO THE COMMIT THREAD. Thread::run is invoked with no catch
 	// (Thread.cpp:46-56), so an escaping exception here would take the process down -- i.e. a
@@ -232,27 +245,130 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 	// the marker is swallowed after one error line; a stale marker then reads as a stall,
 	// which fails in the safe direction.
 	if (rootBroker && commitRet == 0) {
-		try {
-			Time now;
-			StringBuffer marker;
-			marker << now.getMiliTime() / 1000 << " " << now.getFormattedTime() << "\n";
+		writeSuccessfulSaveMarker(objectManager);
+	}
+}
 
-			// Write-and-rename so a monitor can never read a half-written marker.
-			File tmpFile("log/last-successful-save.tmp");
-			FileWriter tmpWriter(&tmpFile, false);
-			tmpWriter << marker;
-			tmpWriter.close();
+// 🔴 REWRITTEN 2026-08-31 FROM FileWriter TO RAW POSIX, AND THE REASON IS THAT THE FIRST
+// VERSION FAILED IN THE UNSAFE DIRECTION. Found by the review that should have run before
+// bdb5d1a4 shipped (free lanes + Opus, independently).
+//
+// The FileWriter version checked NOTHING. `FileWriter::operator<<` discards fwrite's return
+// (FileWriter.h:205-209) and `FileWriter::close()` discards File::close()'s bool (File.cpp:61-71),
+// which is the only place fclose -- and therefore the actual write -- reports failure. Neither
+// throws on ENOSPC/EIO/EDQUOT. So on a full disk the tmp file ended up ZERO BYTES, no error was
+// logged, the rename succeeded, and the published marker was EMPTY WITH A CURRENT MTIME.
+// An mtime-based monitor reads that as HEALTHY.
+// 🔑 That is the worst possible direction for this particular guard: a full log filesystem is
+// strongly correlated with the database trouble the marker exists to detect, so the guard was
+// most likely to lie exactly when it mattered. "Rename is atomic" was true and irrelevant -- it
+// atomically publishes a complete-looking truncated file.
+//
+// It also was not durable: fclose only reaches the page cache. Now the file is fsync'ed AND the
+// containing directory is fsync'ed after the rename, which is what makes the rename itself
+// survive a power loss rather than leaving a zero-length or absent target.
+//
+// Raw POSIX rather than File/FileWriter because neither exposes fsync, every return here must be
+// checked, and dropping FileWriter also removes its exception surface from a thread that cannot
+// afford one (Thread::run is invoked with no catch, Thread.cpp:46-56 -- an escaping exception
+// would take down the server this exists to watch). The try/catch stays as a belt-and-braces
+// outer guard; nothing inside is expected to throw any more.
+void CommitMasterTransactionThread::writeSuccessfulSaveMarker(DOBObjectManager* objectManager) {
+	static const char* const MARKER = "log/last-successful-save";
+	static const char* const MARKER_DIR = "log";
 
-			// std::rename is the atomic step; engine3's File has no rename. Same directory, so
-			// it is a rename within one filesystem and a reader sees either the old marker or
-			// the new one, never a half-written one.
-			if (std::rename("log/last-successful-save.tmp", "log/last-successful-save") != 0) {
-				objectManager->error("could not rename last-successful-save marker into place");
-			}
-		} catch (const Exception& e) {
-			objectManager->error() << "failed writing last-successful-save marker: " << e.getMessage();
-		} catch (...) {
-			objectManager->error() << "failed writing last-successful-save marker: unknown exception";
+	try {
+		Time now;
+		StringBuffer markerText;
+
+		// getTime() is the exact tv_sec (Time.h:387-389). The old getMiliTime() / 1000 routed
+		// through a float division (tv_nsec / 1000000.f), which rounds 999999999ns up to 1000ms
+		// and can report an epoch second one GREATER than the real one.
+		// getFormattedTimeFull() is ISO-8601 with a %z offset; the old getFormattedTime() is
+		// ctime_r -- LOCAL time with no offset in the string, printed next to an absolute epoch,
+		// so a reader in another timezone saw two fields disagreeing with nothing marking which
+		// was which.
+		markerText << now.getTime() << " " << now.getFormattedTimeFull() << "\n";
+
+		String text = markerText.toString();
+
+		// PID in the temp name: a fixed name means two processes sharing a cwd can have one
+		// rename the other's partially written file into place. Not our deployment shape, but
+		// the protocol should not depend on that.
+		StringBuffer tmpPath;
+		tmpPath << MARKER << ".tmp." << (int) getpid();
+		String tmp = tmpPath.toString();
+
+		int fd = ::open(tmp.toCharArray(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+		if (fd < 0) {
+			objectManager->error() << "last-successful-save marker: open(" << tmp << ") failed: "
+				<< strerror(errno);
+			return;
 		}
+
+		const char* buf = text.toCharArray();
+		size_t remaining = text.length();
+		bool ok = true;
+
+		// write(2) is permitted to write fewer bytes than asked even for a regular file; a short
+		// write is exactly how the empty/truncated marker above got published.
+		while (remaining > 0) {
+			ssize_t written = ::write(fd, buf, remaining);
+
+			if (written < 0) {
+				if (errno == EINTR) {
+					continue;
+				}
+
+				objectManager->error() << "last-successful-save marker: write failed: " << strerror(errno);
+				ok = false;
+				break;
+			}
+
+			buf += written;
+			remaining -= (size_t) written;
+		}
+
+		// fsync BEFORE the rename, or the rename can be journalled ahead of the data and a crash
+		// leaves a zero-length marker with a fresh mtime -- the same lie, arrived at differently.
+		if (ok && ::fsync(fd) != 0) {
+			objectManager->error() << "last-successful-save marker: fsync failed: " << strerror(errno);
+			ok = false;
+		}
+
+		if (::close(fd) != 0 && ok) {
+			objectManager->error() << "last-successful-save marker: close failed: " << strerror(errno);
+			ok = false;
+		}
+
+		if (!ok) {
+			// Leave the PREVIOUS marker in place. A stale marker reads as a stall, which is the
+			// safe direction; publishing this one would read as healthy, which is not.
+			::unlink(tmp.toCharArray());
+			return;
+		}
+
+		if (::rename(tmp.toCharArray(), MARKER) != 0) {
+			objectManager->error() << "last-successful-save marker: rename into place failed: "
+				<< strerror(errno);
+			::unlink(tmp.toCharArray());  // do not accumulate orphaned temp files
+			return;
+		}
+
+		// fsync the DIRECTORY so the rename itself is durable. Without this the file contents
+		// survive a power loss but the directory entry pointing at them may not.
+		int dirFd = ::open(MARKER_DIR, O_RDONLY | O_DIRECTORY);
+
+		if (dirFd >= 0) {
+			::fsync(dirFd);
+			::close(dirFd);
+		}
+		// A failure to fsync the directory is NOT reported: the marker is already correct and
+		// visible, and this only affects survival of an unclean power loss.
+	} catch (const Exception& e) {
+		objectManager->error() << "last-successful-save marker: unexpected exception: " << e.getMessage();
+	} catch (...) {
+		objectManager->error() << "last-successful-save marker: unknown exception";
 	}
 }
