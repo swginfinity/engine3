@@ -196,11 +196,20 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 	// Only on the root broker: a non-root broker performs no local commit, so printing a
 	// durability line there would assert something this process did not do.
 	// 🔴 A MARKER FILE, NOT A LOG LINE -- and the reason is that core3.log cannot carry a
-	// heartbeat. Its flush is gated on `syncGlobalLog || forceSync` (Logger.cpp:270) and
-	// `syncGlobalLog` is initialised false (Logger.cpp:22) with nothing in the tree setting
-	// it, so the file only reaches disk when its buffer fills. One ~70-byte line every five
-	// minutes cannot fill it; measured on live, ambient traffic is ~4.1 KB/h, so a 4-8 KB
-	// buffer flushes roughly hourly -- and the delay is a function of UNRELATED log volume,
+	// heartbeat. Its flush is gated on `syncGlobalLog || forceSync` (Logger.cpp:270), and
+	// `syncGlobalLog` is initialised false (Logger.cpp:22) and CONFIG-CONTROLLED, not
+	// hardcoded: Logger::setGlobalFileLoggerSync() (Logger.cpp:129) is called from
+	// ServerCore.cpp:3295 with `Core3.LogSync`, which defaults false (ConfigManager.h:596)
+	// and is `LogSync = 0` in live's conf/config.lua:115. (An earlier version of this
+	// comment claimed nothing in the tree sets it -- that grep was scoped to the engine3
+	// subtree and missed the Core3-side caller.) So on every box we run, the file reaches
+	// disk only when its buffer fills. One ~70-byte line every five minutes cannot fill it;
+	// ambient traffic on live is a MEASURED ~4.1 KB/h (77,884 B / 395 lines / 19 h), which
+	// against a buffer of a few KB puts the flush period on the order of an hour -- the
+	// traffic is measured, the buffer SIZE is not, so treat the period as an estimate.
+	// 🔑 Being a CONFIG knob strengthens the case for a marker: a heartbeat whose visibility
+	// depends on a logging setting nobody remembers is worse than one that does not depend
+	// on logging at all. And the delay is a function of UNRELATED log volume,
 	// so a quiet healthy server flushes SLOWEST. There is no stable latency there to
 	// calibrate a stall threshold against. (MrO 2026-08-31: "I wouldn't change how core3.log
 	// works just for this.")
