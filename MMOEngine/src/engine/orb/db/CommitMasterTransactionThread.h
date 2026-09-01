@@ -50,7 +50,10 @@ namespace engine {
 		// Never throws into the commit thread (Thread::run has no catch); every failure leaves the
 		// PREVIOUS marker in place, so the guard degrades to "stale" (reads as a stall) rather than
 		// to a fresh-mtime lie.
-		void writeSuccessfulSaveMarker(DOBObjectManager* objectManager);
+		// Runs on a TASK, not on the commit thread, so filesystem I/O never holds blockMutex.
+		// commitTime is sampled at the COMMIT and passed in: a delayed task must not stamp the
+		// marker with its own later clock, which would overstate freshness and mask a stall.
+		void writeSuccessfulSaveMarker(DOBObjectManager* objectManager, const Time& commitTime);
 	};
 
   } // namespace ORB

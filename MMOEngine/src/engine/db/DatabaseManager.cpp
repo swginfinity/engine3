@@ -555,11 +555,24 @@ void DatabaseManager::commitLocalTransaction(engine::db::berkeley::Transaction* 
 	int iteration = 0;
 	int ret = -1;
 	int count = 0;
+	// GH-2198: how many objects in THIS attempt failed to write. `ret` below holds only the
+	// LAST object's status, so a failure on object N followed by a success on N+1 leaves
+	// ret == 0 and the batch commits with N missing -- silently, because the only record is
+	// a per-object error line buried in the loop with nothing tying it to the commit.
+	// Reset per do-iteration: a deadlock retry re-runs the whole batch.
+	int failedObjects = 0;
 
 	Transaction* berkeleyTransaction = nullptr;
 
 	do {
 		ret = -1;
+		failedObjects = 0;
+		// Reset with failedObjects: `count` is the DENOMINATOR of the summary lines below, and a
+		// DB_LOCK_DEADLOCK retry re-runs the WHOLE batch from the top. Leaving it cumulative
+		// reported "1 of 1500 FAILED" for a 1000-object batch that had retried once -- a
+		// denominator larger than the batch itself, which is exactly the number an operator
+		// would size the damage against during an incident.
+		count = 0;
 
 		berkeleyTransaction = databaseEnvironment->beginTransaction(masterTransaction);
 
@@ -582,6 +595,8 @@ void DatabaseManager::commitLocalTransaction(engine::db::berkeley::Transaction* 
 
 					break;
 				} else if (ret != 0) {
+					++failedObjects;
+
 					error() << "error while trying to putData :" << db_strerror(ret);
 				}
 
@@ -595,6 +610,8 @@ void DatabaseManager::commitLocalTransaction(engine::db::berkeley::Transaction* 
 					warning() << "deadlock detected while trying to deleteData iterating time " << iteration;
 					break;
 				} else if (ret != 0 && ret != DB_NOTFOUND) {
+					++failedObjects;
+
 					error() << "error while trying to deleteData :" << db_strerror(ret);
 				}
 			}
@@ -610,14 +627,42 @@ void DatabaseManager::commitLocalTransaction(engine::db::berkeley::Transaction* 
 
 	fatal((iteration < ObjectDatabase::DEADLOCK_MAX_RETRIES) && berkeleyTransaction) << "exceeded bdb deadlock retries aborting";
 
-	if (ret != 0 && ret != DB_NOTFOUND)
+	if (ret != 0 && ret != DB_NOTFOUND) {
+		// GH-2198: the ABORT path discards the ENTIRE batch -- strictly worse than the partial
+		// case reported below -- and it used to say nothing at all beyond the per-object error()
+		// above. Note this branch keys on `ret`, the LAST object's status, so it fires when the
+		// final object failed no matter how many earlier ones succeeded.
+		error() << "save ABORTED after " << count << " object writes (" << failedObjects
+			<< " failed) -- the ENTIRE batch was discarded and NONE of it is on disk "
+			<< "(see the putData/deleteData errors above)";
+
 		berkeleyTransaction->abort();
-	else {
+	} else {
 		int commitRet = 0;
 
 		//if ((commitRet = berkeleyTransaction->commitNoSync()) != 0) {
 		if ((commitRet = berkeleyTransaction->commitSync()) != 0) {
 			fatal() << "error commiting berkeley transaction " << db_strerror(commitRet);
+		}
+
+		// GH-2198: say it out loud when the batch we just COMMITTED was incomplete.
+		// Behaviour is deliberately UNCHANGED -- the objects are still dropped and the
+		// batch still commits (MrObvious 2026-09-01: "I would say make it loud" /
+		// "if it is ignored now, I think writing it log normally is fine"). What was
+		// missing is any line connecting a per-object failure to the commit that went
+		// ahead without it: the loop's own error() names the object's error but nothing
+		// said the save then succeeded minus that object, so the batch looked clean.
+		// A plain error() on purpose -- no forced sync. It reaches the console
+		// immediately and core3.log on the normal buffered path, which is strictly
+		// better than the silence it replaces.
+		if (failedObjects > 0) {
+			// "not persisted as intended" rather than "not on disk": a failed tryDeleteData
+			// means the row IS still on disk and should not be -- the opposite direction -- so
+			// one wording has to cover both or it sends the reader looking the wrong way.
+			error() << "save COMMITTED with " << failedObjects << " of " << count
+				<< " object writes/deletes FAILED -- those objects were NOT persisted as "
+				<< "intended and the batch committed without them (see the putData/deleteData "
+				<< "errors above)";
 		}
 	}
 

@@ -17,6 +17,9 @@
 
 #include "CommitMasterTransactionThread.h"
 
+#include "engine/core/Core.h"
+#include "engine/core/TaskManager.h"
+
 #include "system/io/File.h"
 #include "system/io/FileWriter.h"
 
@@ -157,9 +160,20 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 	// success we did not have.
 	const bool rootBroker = DistributedObjectBroker::instance()->isRootBroker();
 	int commitRet = 0;
+	// 🔴 SAMPLED THE INSTANT THE COMMIT RETURNS, not at the end of commitData(). The marker
+	// answers "when did we last successfully SAVE", so it must carry the COMMIT's clock.
+	// Sampling it further down -- after checkCommittedObjects(), garbageCollect() and
+	// finishObjectUpdate() -- overstates freshness by the length of that tail, which on a
+	// large GC pass is not small (a 743,794-candidate pass was observed taking minutes).
+	// That lag was a review finding, and the first version of this change did NOT fix it:
+	// it moved the write to a task but still sampled the time at the bottom of the function.
+	Time commitTime;
 
 	if (rootBroker) {
 		commitRet = ObjectDatabaseManager::instance()->commitTransaction(transaction);
+
+		commitTime.updateToCurrentTime();
+
 		ObjectDatabaseManager::instance()->checkpoint();
 
 		objectManager->onCommitData();
@@ -245,7 +259,50 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 	// the marker is swallowed after one error line; a stale marker then reads as a stall,
 	// which fails in the safe direction.
 	if (rootBroker && commitRet == 0) {
-		writeSuccessfulSaveMarker(objectManager);
+		// 🔴 commitTime was sampled AT THE COMMIT above, and is passed by value into the task
+		// (MrObvious 2026-09-01: "pass it the time in case the task is delayed"). If the
+		// queued writer runs late under load, stamping the marker with the WRITER's clock
+		// would silently overstate freshness and mask the very stall this exists to detect.
+		//
+		// 🔴 OFF THE COMMIT THREAD ON PURPOSE (MrObvious 2026-09-01: "why not move it to a
+		// separate task?"). commitData() runs with blockMutex held for its whole duration,
+		// and the next save cycle blocks on that mutex in startWatch(). Doing filesystem I/O
+		// inline meant a hung or stalled log filesystem would stall SAVES -- exactly the
+		// failure class the marker is meant to report on, caused by the reporter. All three
+		// review lanes flagged it. An immediate task takes the I/O off the lock entirely.
+		//
+		// It also retires the hand-rolled "must never throw into the commit thread" guard as
+		// the load-bearing protection: Thread::run has no catch, but this no longer runs on
+		// that thread. The try/catch inside stays anyway -- belt and braces, and the task
+		// worker deserves the same courtesy.
+		DOBObjectManager* markerObjectManager = objectManager;
+
+		// Core::getTaskManager() returns nullptr once taskManagerShutDown is set (Core.cpp:206),
+		// and calling through it would be UB plus a leaked LambdaTask. The rest of the engine
+		// goes through Task::execute() precisely because that null-checks; this call site has to
+		// do it itself.
+		// 🔴 SKIP THE MARKER ENTIRELY IF WE ARE SHUTTING DOWN -- MrObvious 2026-09-01: "there is
+		// no need to write the marker during the server shutdown" / "I would just skip the task
+		// if taskmanager is down/during shutdown process". This is INTENDED behaviour, not a gap
+		// to close: the server is going down deliberately, nothing monitors for a save it was
+		// told to stop doing, and the checker's own BOOT_GRACE_S covers the window after it comes
+		// back. 🔴 DO NOT add a synchronous shutdown-path write to "fix" this -- a review filed
+		// the dropped final-save marker as a defect and it is not one.
+		//
+		// Both shutdown states are already covered, and between them the skip is total:
+		//   * task manager DOWN  -> Core::getTaskManager() returns nullptr once
+		//     taskManagerShutDown is set (Core.cpp:206), and the null check below skips. Without
+		//     it this would be a call through a null pointer plus a leaked LambdaTask, since the
+		//     rest of the engine reaches the manager via Task::execute(), which null-checks.
+		//   * still alive but SHUTTING DOWN -> TaskManagerImpl::executeTask drops the task itself
+		//     when shuttingDown is set (TaskManagerImpl.cpp:465).
+		TaskManager* taskManager = Core::getTaskManager();
+
+		if (taskManager != nullptr) {
+			taskManager->executeTask([markerObjectManager, commitTime]() {
+				CommitMasterTransactionThread::instance()->writeSuccessfulSaveMarker(markerObjectManager, commitTime);
+			}, "WriteSuccessfulSaveMarker");
+		}
 	}
 }
 
@@ -273,15 +330,16 @@ void CommitMasterTransactionThread::commitData() NO_THREAD_SAFETY_ANALYSIS {
 // afford one (Thread::run is invoked with no catch, Thread.cpp:46-56 -- an escaping exception
 // would take down the server this exists to watch). The try/catch stays as a belt-and-braces
 // outer guard; nothing inside is expected to throw any more.
-void CommitMasterTransactionThread::writeSuccessfulSaveMarker(DOBObjectManager* objectManager) {
+void CommitMasterTransactionThread::writeSuccessfulSaveMarker(DOBObjectManager* objectManager, const Time& commitTime) {
 	static const char* const MARKER = "log/last-successful-save";
 	static const char* const MARKER_DIR = "log";
 
 	try {
-		Time now;
+		// commitTime is the COMMIT's clock, passed in from commitData -- never sampled here.
+		const Time& now = commitTime;
 		StringBuffer markerText;
 
-		// getTime() is the exact tv_sec (Time.h:387-389). The old getMiliTime() / 1000 routed
+		// getTime() is the exact tv_sec (Time.h:388-390). The old getMiliTime() / 1000 routed
 		// through a float division (tv_nsec / 1000000.f), which rounds 999999999ns up to 1000ms
 		// and can report an epoch second one GREATER than the real one.
 		// getFormattedTimeFull() is ISO-8601 with a %z offset; the old getFormattedTime() is
@@ -292,11 +350,19 @@ void CommitMasterTransactionThread::writeSuccessfulSaveMarker(DOBObjectManager* 
 
 		String text = markerText.toString();
 
-		// PID in the temp name: a fixed name means two processes sharing a cwd can have one
-		// rename the other's partially written file into place. Not our deployment shape, but
-		// the protocol should not depend on that.
+		// 🔴 UNIQUE PER TASK, NOT PER PROCESS -- and the difference is the whole point.
+		// This used to be `.tmp.<pid>`, which was sufficient while the write ran INLINE on the
+		// single commit thread under blockMutex: only one writer could ever exist. Moving it to
+		// a task removed that serialisation -- tasks are dispatched round-robin across worker
+		// queues (TaskManagerImpl.cpp:473), so cycle N's task can still be running when N+1's is
+		// dispatched. Two tasks then open the SAME path with O_TRUNC: A writes 40 bytes and
+		// blocks in fsync, B truncates to 0 and writes its own, and A renames a NUL-padded file
+		// into place with a fresh mtime. That is precisely the healthy-looking lie the POSIX
+		// rewrite exists to prevent, reintroduced by the concurrency the task change created.
+		// The stall that makes it likely -- a hung log filesystem -- is the exact condition the
+		// task change was made to tolerate. Found by review before this shipped.
 		StringBuffer tmpPath;
-		tmpPath << MARKER << ".tmp." << (int) getpid();
+		tmpPath << MARKER << ".tmp." << (int) getpid() << "." << (uint64) now.getMiliTime();
 		String tmp = tmpPath.toString();
 
 		int fd = ::open(tmp.toCharArray(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -347,6 +413,27 @@ void CommitMasterTransactionThread::writeSuccessfulSaveMarker(DOBObjectManager* 
 			// safe direction; publishing this one would read as healthy, which is not.
 			::unlink(tmp.toCharArray());
 			return;
+		}
+
+		// 🔴 MONOTONICITY GUARD (B2). Nothing orders tasks across worker queues, so a delayed
+		// task can carry an OLDER commitTime than the marker already on disk. Publishing it
+		// would walk the marker BACKWARDS and manufacture a stall alert on a healthy server.
+		// Read what is there and refuse to go back in time. Failing to read (missing/corrupt)
+		// is treated as "publish", which is the safe direction -- it restores a valid marker.
+		{
+			FILE* existing = ::fopen(MARKER, "r");
+
+			if (existing != nullptr) {
+				unsigned long long onDisk = 0;
+
+				if (::fscanf(existing, "%llu", &onDisk) == 1 && onDisk > (unsigned long long) now.getTime()) {
+					::fclose(existing);
+					::unlink(tmp.toCharArray());
+					return;
+				}
+
+				::fclose(existing);
+			}
 		}
 
 		if (::rename(tmp.toCharArray(), MARKER) != 0) {
