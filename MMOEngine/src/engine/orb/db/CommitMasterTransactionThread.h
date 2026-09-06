@@ -25,6 +25,23 @@ namespace engine {
 		Mutex blockMutex;
 		Condition waitCondition;
 
+		// 🔴 THE PREDICATE -- AND READ WHAT IT DOES AND DOES NOT DO, because the obvious reading
+		// is wrong here. This is NOT closing a lost-wakeup hole. engine3's Condition is not a raw
+		// pthread condition variable: doSignal() latches into signalCount when waiterCount == 0
+		// (Condition.h:146-155) and doWait() consumes it without parking (Condition.h:104-118).
+		// Both sides of this class run under blockMutex, so those counters cannot be raced here and
+		// a signal delivered while the master is in its tail is REMEMBERED. Measured against the
+		// real header with a positive control (a plain condvar loses it; this one does not) --
+		// hk-artifacts/2026-09-06-gh2193/RESULT.md.
+		// What the predicate IS worth: pthread_cond_wait is permitted to return spuriously, and the
+		// old bare wait would then have run commitData() on nulled members. It also states the
+		// handoff invariant in the code instead of leaving it implicit in Condition's counters.
+		// ⚠️ It does NOT fix GH #2193. That incident's root cause is OPEN; the candidates are
+		// commitData() making untimed external calls (SQL, a director socket send, BDB
+		// commitSync/checkpoint) while holding blockMutex, and the objectUpdateInProgress latch,
+		// which is cleared only inside commitData() and so turns any stall into a permanent one.
+		bool workPending;
+
 		engine::db::berkeley::Transaction* transaction;
 		Vector<UpdateModifiedObjectsThread*>* threads;
 		Vector<DistributedObject* >* objectsToDeleteFromRam;

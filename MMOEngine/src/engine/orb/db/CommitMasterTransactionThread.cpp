@@ -37,6 +37,8 @@ CommitMasterTransactionThread::CommitMasterTransactionThread() : Logger("CommitM
 
 	numberOfThreads = 0;
 
+	workPending = false;
+
 	doRun = true;
 }
 
@@ -50,12 +52,31 @@ void CommitMasterTransactionThread::startWatch(engine::db::berkeley::Transaction
 	fatal(workers != nullptr) << "workers is null";
 	fatal(objectsToCollect != nullptr) << "objectsToCollect is null";
 
+	// 🔴 THE HANDOFF IS NOW ENTIRELY UNDER blockMutex. (a) IS THE SUBSTANTIVE FIX; (b) is hygiene.
+	//
+	// (a) The four members used to be assigned OUTSIDE the lock while run() nulls them INSIDE it,
+	//     which is a plain data race on the same window that loses the signal: run() can null what
+	//     startWatch() has just written, and commitData() then dereferences objectsToDeleteFromRam
+	//     as a null pointer. Assigning under the lock also makes startWatch() WAIT for the previous
+	//     iteration's tail instead of racing it, which is the serialisation the caller-side
+	//     objectUpdateInProgress latch was wrongly assumed to provide -- finishObjectUpdate() runs
+	//     INSIDE commitData(), so the latch is already clear while run() is still in its tail.
+	//
+	// (b) workPending is set before the signal. ⚠️ NOT because a signal would otherwise be lost --
+	//     Condition already latches one (Condition.h:146-155), see the header comment -- but so the
+	//     master cannot act on a SPURIOUS pthread_cond_wait return, which is permitted and which the
+	//     old bare wait would have taken as work.
+	//
+	// ⚠️ This does not add blocking that was not already there: commitData() runs with blockMutex
+	// held for its whole duration, so startWatch()'s existing lock() already waited on it.
+	blockMutex.lock();
+
 	transaction = trans;
 	threads = workers;
 	numberOfThreads = number;
 	objectsToDeleteFromRam = objectsToCollect;
 
-	blockMutex.lock();
+	workPending = true;
 
 	waitCondition.signal(&blockMutex);
 
@@ -66,11 +87,24 @@ void CommitMasterTransactionThread::run() {
 	while (doRun) {
 		blockMutex.lock();
 
-		waitCondition.wait(&blockMutex);
+		// 🔴 while, NOT if -- the loop is what makes the predicate worth having. It absorbs a
+		// spurious wakeup, and it re-parks when shutdown()'s broadcast is not for us. doRun is
+		// tested here too so a shutdown that arrives with no work queued still leaves the wait.
+		// ⚠️ KNOWN AND UNCHANGED: a shutdown arriving with workPending set drops that save, exactly
+		// as the old code did (it tested `if (doRun)` before commitData). Draining it is a shutdown
+		// -protocol change and is deliberately not attempted here.
+		while (!workPending && doRun) {
+			waitCondition.wait(&blockMutex);
+		}
 
-		if (doRun) {
+		if (doRun && workPending) {
 			commitData();
 		}
+
+		// Cleared under the same lock that set it, AFTER commitData() has consumed the members.
+		// The next startWatch() is blocked on blockMutex until this point, so it cannot overwrite
+		// a cycle still in flight nor lose its own signal.
+		workPending = false;
 
 		transaction = nullptr;
 		threads = nullptr;
