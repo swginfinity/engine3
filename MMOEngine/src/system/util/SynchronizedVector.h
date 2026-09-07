@@ -75,6 +75,27 @@ namespace sys {
 	   	   return vector;
 	   }
 
+	   /**
+	    * A SNAPSHOT of the contents, taken under the read lock.
+	    *
+	    * Every operation on this class is individually locked and NONE of them compose. The
+	    * idiom `for (int i = 0; i < v.size(); ++i) v.get(i)` therefore has no lock spanning the
+	    * two calls: a writer that shrinks the vector between them makes get(i) throw
+	    * ArrayIndexOutOfBoundsException, which is a caught-and-logged exception that abandons
+	    * whatever the loop was doing partway through. size() is worse than get() here -- with
+	    * ATOMIC_SYNC_VECTOR_COUNT off it reads vector.size() with NO lock at all.
+	    *
+	    * Callers that iterate must iterate a snapshot. The elements are references, so a snapshot
+	    * can contain something that has since been removed -- an iteration over a snapshot must
+	    * still tolerate a stale element, exactly as it must tolerate one removed a line later.
+	    * What the snapshot removes is the crash, not the staleness.
+	    */
+	   Vector<E> toVector() const {
+		   ReadLocker locker(&guard);
+
+		   return vector;
+	   }
+
 	   int size() const {
 #ifdef ATOMIC_SYNC_VECTOR_COUNT
 		   return count;
@@ -97,9 +118,14 @@ namespace sys {
    }
 
    template<class E>
-   SynchronizedVector<E>::SynchronizedVector(const SynchronizedVector<E>& array) : Object(), vector(array.vector) {
+   SynchronizedVector<E>::SynchronizedVector(const SynchronizedVector<E>& array) : Object(), vector(array.toVector()) {
+	   // toVector() rather than array.vector: the copy constructor read the source's storage with
+	   // NO lock held, so copying a vector another thread was mutating raced on the buffer itself.
+	   // DisseminateExperienceTask does exactly that -- it copies a lair's live spawnedCreatures on
+	   // the death path (DisseminateExperienceTask.h:27) while the lair keeps despawning into it.
+	   // Only the SOURCE is locked here; a newly constructed object has no other referent.
 #ifdef ATOMIC_SYNC_VECTOR_COUNT
-	   count = array.vector.size();
+	   count = vector.size();
 #endif
    }
 
@@ -112,12 +138,29 @@ namespace sys {
 
    template<class E>
    SynchronizedVector<E>& SynchronizedVector<E>::operator=(const SynchronizedVector<E>& array) {
+	   // Snapshot the SOURCE before taking our own lock. This used to read array.getVectorUnsafe()
+	   // with only the destination locked, so assigning from a vector another thread was mutating
+	   // raced on the source's buffer -- the same hole the copy constructor had.
+	   //
+	   // 🔴 CONSTRAINT THIS INTRODUCES, AND IT IS NOT SATISFIED BY SynchronizedSortedVector:
+	   // the source read lock must not be taken while the CALLER already holds another
+	   // SynchronizedVector's guard, or two threads assigning in opposite directions deadlock
+	   // ABBA on non-recursive pthread rwlocks. This function itself holds nothing while
+	   // snapshotting, so a direct `a = b` is safe. SynchronizedSortedVector::operator= takes its
+	   // own write lock and THEN calls this, which nests source-read inside destination-write --
+	   // that path is already a hard self-deadlock for an unrelated reason (it re-acquires its own
+	   // non-recursive guard through the Locker below), so it is dead rather than newly broken.
+	   // Do not revive it without restructuring both.
+	   Vector<E> snapshot = array.toVector();
+
 	   Locker locker(&guard);
 
-	   vector.operator=(array.getVectorUnsafe());
+	   vector.operator=(std::move(snapshot));
 
 #ifdef ATOMIC_SYNC_VECTOR_COUNT
-	   count = array.count;
+	   // From what we actually hold, not from the source's live counter: `vector` is the snapshot,
+	   // and array.count is both a different moment and an unlocked read.
+	   count = vector.size();
 #endif
 
 	   return *this;
