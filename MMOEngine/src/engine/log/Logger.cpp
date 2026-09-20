@@ -150,6 +150,28 @@ void Logger::setFileLogger(const String& file, bool appendData, bool rotateOnOpe
 void Logger::closeGlobalFileLogger(bool force) {
 	auto globalLogFile = Logger::globalLogFile;
 
+	// Flush FIRST, while the writer is still the canonical one and this local Reference is
+	// keeping it alive. closeLog() below is gated on getReferenceCount() <= 6 || force and the
+	// close is what flushes; the gate does pass for the global log, but flushing here means the
+	// bytes land without depending on that. It also covers the callers that never reach a clean
+	// close: ObjectNotDeployedException calls this immediately before raise(SIGSEGV).
+	//
+	// The null check is load-bearing, not defensive: this function is called TWICE on a normal
+	// teardown (ServerCore::shutdown, then Core::finalizeContext when ~ServerCore runs), and on
+	// the second call the CAS below has already nulled the static.
+	//
+	// The catch is not decoration. FileWriter::flush() runs validateWriteable(), which throws
+	// FileNotFoundException when File::exists() is false -- and exists() is a NULL-DESCRIPTOR
+	// check (File.h), not a stat, so it is false on an already-closed writer whose isOpen flag
+	// was never reset. A log flush that cannot happen must never take down the caller: every
+	// caller here is either shutting down or already crashing.
+	if (globalLogFile != nullptr) {
+		try {
+			globalLogFile->flush();
+		} catch (...) {
+		}
+	}
+
 	bool success = Logger::globalLogFile.compareAndSet(globalLogFile, nullptr);
 
 	if (success && globalLogFile != nullptr) {

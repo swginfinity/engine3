@@ -46,6 +46,13 @@ void FileLogWriter::closeLog(bool force) {
 
 	if (writer != nullptr && (writer->getReferenceCount() <= 6 || force)) {
 		filemap.drop(fileName);
+
+		// NOTE: this deliberately does NOT reset FileWriter::isOpen, and it must not.
+		// File::close() nulls the descriptor and File::exists() is a null-descriptor test, so a
+		// later write or flush walks past the isOpen check and THROWS FileNotFoundException --
+		// which is the intended outcome. Reset isOpen and validateWriteable() takes the reopen
+		// branch instead, silently freopen-ing a log file that was closed on purpose. For a
+		// shutdown log that means resurrecting the file after its own end-of-log marker.
 		file->close();
 	}
 }

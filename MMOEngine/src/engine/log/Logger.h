@@ -202,6 +202,17 @@ namespace engine {
 		static void setGlobalFileLoggerSync(bool val);
 		static void setGlobalFileJson(bool val);
 
+		// Flushes the global log file before it closes it. FileLogWriter::closeLog() only closes
+		// when getReferenceCount() <= 6 || force, and the close is what flushes (File::close() is
+		// fclose). For the global log that gate PASSES -- nothing takes a counted reference to it
+		// on any hot path (Logger::log reads it as a raw pointer), so the count is structurally 2
+		// at rest and 3 inside closeLog. Do NOT read this comment as a reason to pass force=true:
+		// the gate is not the problem, and forcing it would only widen the fclose-vs-fwrite race
+		// closeLog already has.
+		//
+		// The flush is here so durability does not DEPEND on that reasoning, and so it also
+		// happens on the paths that never reach a clean close -- notably
+		// ObjectNotDeployedException, which calls this on its way to raise(SIGSEGV).
 		static void closeGlobalFileLogger(bool force = false);
 
 		void setFileLogger(const String& file, bool appendData = false, bool rotateOnOpen = false);
