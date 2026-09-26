@@ -115,51 +115,30 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 			// both of which dispatch to this same commitObjectsToDatabase()) uses to
 			// actually write a persistent object's row, so it is the one place that
 			// covers every write regardless of which path selected the object.
+			//
+			// An exempt object is simply NOT WRITTEN, and nothing else: no row delete, no
+			// bookkeeping flags, and its dirty flag is deliberately LEFT SET. So it is
+			// re-evaluated on every save, and the save after it (or its parent) leaves the
+			// snapshot container writes it -- and its children, which were skipped the same
+			// way -- with no re-dirtying needed. A dirty object is also never picked by the
+			// post-commit RAM eviction (CommitMasterTransactionThread). The first version
+			// deleted rows and cleared the flag; three review rounds found three lifecycle
+			// defects in that (stale lastCRCSave, eviction with no row, children of a looted
+			// item never rewritten). A row that already exists for something now in a crate
+			// is left for the orphan purge, like the ones that predate this change.
 			int skippedCount = 0;
-			int skippedRowsDeleted = 0;
 
 			for (int i = startOffset; i < endOffset; ++i) {
 				DistributedObject* object = objectsToUpdate->get(i);
-				ManagedObject* managedObject = static_cast<ManagedObject*>(object);
 
-				if (object->isPersistent() && managedObject->isSaveExemptFromDatabase()) {
+				if (object->isPersistent() && static_cast<ManagedObject*>(object)->isSaveExemptFromDatabase()) {
 					++skippedCount;
-
-					// A previous save may already have deleted this row; only issue
-					// the delete once per transition into exemption (mirrors the
-					// _isDeletedFromDatabase bookkeeping already used for the
-					// _isMarkedForDeletion path below).
-					if (!object->_isDeletedFromDatabase()) {
-						objectManager->commitDestroyObjectToDB(object->_getObjectID());
-						object->_setDeletedFromDatabase(true);
-
-						// The row is gone, so the last-saved CRC no longer describes anything
-						// on disk. Without this, an object that leaves exemption in exactly the
-						// state it was last written in (moved into a crate and straight back)
-						// hits commitUpdatePersistentObjectToDB's unchanged-CRC early return,
-						// is never rewritten, and is lost at the next boot.
-						managedObject->setLastCRCSave(0);
-
-						++skippedRowsDeleted;
-					}
-
-					// Consume the dirty flag: this object is not being written, so
-					// there is nothing left for the next save to do until it is
-					// legitimately re-dirtied (e.g. moved out of the snapshot
-					// container), which sets _updated true again on its own.
-					object->_setUpdated(false);
 
 					continue;
 				}
 
-				if (object->isPersistent() && objectManager->commitUpdatePersistentObjectToDB(object) == 0) {
+				if (object->isPersistent() && objectManager->commitUpdatePersistentObjectToDB(object) == 0)
 					++j;
-
-					// Reset now-stale "deleted" bookkeeping: this object has a real row
-					// again, so if it cycles back into exemption later its row must be
-					// deleted again rather than being (wrongly) assumed already gone.
-					object->_setDeletedFromDatabase(false);
-				}
 			}
 
 			objectManager->info(true) << "thread " << threadId << " copied "
@@ -169,7 +148,7 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 			// the core3.log file level on dev, TC and live. One line per worker per save cycle.
 			if (skippedCount > 0) {
 				objectManager->log() << "thread " << threadId << " save-exempt: skipped " << commas << skippedCount
-					<< " snapshot-container objects, deleted " << commas << skippedRowsDeleted << " stale rows";
+					<< " snapshot-container objects (not written, left dirty)";
 			}
 		}
 
