@@ -108,6 +108,8 @@ public:
 
 	bool isPersistent() const;
 
+	bool isSaveExemptFromDatabase();
+
 	int getPersistenceLevel() const;
 
 	/**
@@ -233,6 +235,8 @@ public:
 
 	bool isPersistent() const;
 
+	virtual bool isSaveExemptFromDatabase();
+
 	int getPersistenceLevel() const;
 
 protected:
@@ -313,6 +317,8 @@ public:
 	void setLastSaveTime(unsigned int timeval);
 
 	bool isPersistent() const;
+
+	bool isSaveExemptFromDatabase();
 
 	int getPersistenceLevel() const;
 

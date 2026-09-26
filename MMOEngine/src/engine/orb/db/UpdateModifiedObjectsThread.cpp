@@ -109,15 +109,55 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 		if (objectsToUpdate != nullptr) {
 			int j = 0;
 
+			// Infinity (GH-2201): snapshot-container filter. This is the single choke
+			// point every save (full, delta, and the final shutdown save all funnel
+			// here -- see DOBObjectManager::executeUpdateThreads/executeDeltaUpdateThreads,
+			// both of which dispatch to this same commitObjectsToDatabase()) uses to
+			// actually write a persistent object's row, so it is the one place that
+			// covers every write regardless of which path selected the object.
+			int skippedCount = 0;
+			int skippedRowsDeleted = 0;
+
 			for (int i = startOffset; i < endOffset; ++i) {
 				DistributedObject* object = objectsToUpdate->get(i);
+				ManagedObject* managedObject = static_cast<ManagedObject*>(object);
 
-				if (object->isPersistent() && objectManager->commitUpdatePersistentObjectToDB(object) == 0)
+				if (managedObject->isSaveExemptFromDatabase()) {
+					++skippedCount;
+
+					// A previous save may already have deleted this row; only issue
+					// the delete once per transition into exemption (mirrors the
+					// _isDeletedFromDatabase bookkeeping already used for the
+					// _isMarkedForDeletion path below).
+					if (!object->_isDeletedFromDatabase()) {
+						objectManager->commitDestroyObjectToDB(object->_getObjectID());
+						object->_setDeletedFromDatabase(true);
+
+						++skippedRowsDeleted;
+					}
+
+					// Consume the dirty flag: this object is not being written, so
+					// there is nothing left for the next save to do until it is
+					// legitimately re-dirtied (e.g. moved out of the snapshot
+					// container), which sets _updated true again on its own.
+					object->_setUpdated(false);
+
+					continue;
+				}
+
+				if (object->isPersistent() && objectManager->commitUpdatePersistentObjectToDB(object) == 0) {
 					++j;
+
+					// Reset now-stale "deleted" bookkeeping: this object has a real row
+					// again, so if it cycles back into exemption later its row must be
+					// deleted again rather than being (wrongly) assumed already gone.
+					object->_setDeletedFromDatabase(false);
+				}
 			}
 
 			objectManager->info(true) << "thread " << threadId << " copied "
-				<< commas << j << " modified objects into ram in " << start.miliDifference(Time::MONOTONIC_TIME) << " ms";
+				<< commas << j << " modified objects into ram in " << start.miliDifference(Time::MONOTONIC_TIME) << " ms"
+				<< "; skipped " << skippedCount << " snapshot-exempt objects (" << skippedRowsDeleted << " stale rows deleted)";
 		}
 
 		start.updateToCurrentTime(Time::MONOTONIC_TIME);

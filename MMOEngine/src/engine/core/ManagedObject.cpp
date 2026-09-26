@@ -8,7 +8,7 @@
  *	ManagedObjectStub
  */
 
-enum {RPC_UPDATEFORWRITE__ = 3653780595,RPC_LOCK__BOOL_,RPC_LOCK__MANAGEDOBJECT_,RPC_RLOCK__BOOL_,RPC_RLOCK__MANAGEDOBJECT_,RPC_WLOCK__BOOL_,RPC_WLOCK__MANAGEDOBJECT_,RPC_UNLOCK__BOOL_,RPC_RUNLOCK__BOOL_,RPC_SETLOCKNAME__STRING_,RPC_NOTIFYDESTROY__,RPC_NOTIFYLOADFROMDATABASE__,RPC_INITIALIZETRANSIENTMEMBERS__,RPC_UPDATETODATABASE__,RPC_GETLASTCRCSAVE__,RPC_SETLASTCRCSAVE__INT_,RPC_GETLASTSAVETIME__,RPC_SETLASTSAVETIME__INT_,RPC_ISPERSISTENT__,RPC_GETPERSISTENCELEVEL__,};
+enum {RPC_UPDATEFORWRITE__ = 3653780595,RPC_LOCK__BOOL_,RPC_LOCK__MANAGEDOBJECT_,RPC_RLOCK__BOOL_,RPC_RLOCK__MANAGEDOBJECT_,RPC_WLOCK__BOOL_,RPC_WLOCK__MANAGEDOBJECT_,RPC_UNLOCK__BOOL_,RPC_RUNLOCK__BOOL_,RPC_SETLOCKNAME__STRING_,RPC_NOTIFYDESTROY__,RPC_NOTIFYLOADFROMDATABASE__,RPC_INITIALIZETRANSIENTMEMBERS__,RPC_UPDATETODATABASE__,RPC_GETLASTCRCSAVE__,RPC_SETLASTCRCSAVE__INT_,RPC_GETLASTSAVETIME__,RPC_SETLASTSAVETIME__INT_,RPC_ISPERSISTENT__,RPC_ISSAVEEXEMPTFROMDATABASE__,RPC_GETPERSISTENCELEVEL__,};
 
 ManagedObject::ManagedObject() {
 	ManagedObjectImplementation* _implementation = new ManagedObjectImplementation();
@@ -393,6 +393,20 @@ bool ManagedObject::isPersistent() const {
 	}
 }
 
+bool ManagedObject::isSaveExemptFromDatabase() {
+	ManagedObjectImplementation* _implementation = static_cast<ManagedObjectImplementation*>(_getImplementation());
+	if (unlikely(_implementation == nullptr)) {
+		if (!deployed)
+			throw ObjectNotDeployedException(this);
+
+		DistributedMethod method(this, RPC_ISSAVEEXEMPTFROMDATABASE__);
+
+		return method.executeWithBooleanReturn();
+	} else {
+		return _implementation->isSaveExemptFromDatabase();
+	}
+}
+
 int ManagedObject::getPersistenceLevel() const {
 	ManagedObjectImplementation* _implementation = static_cast<ManagedObjectImplementation*>(_getImplementationForRead());
 	if (unlikely(_implementation == nullptr)) {
@@ -599,6 +613,11 @@ bool ManagedObjectImplementation::isPersistent() const{
 	return persistenceLevel != 0;
 }
 
+bool ManagedObjectImplementation::isSaveExemptFromDatabase() {
+	// engine/core/ManagedObject.idl():  		return false;
+	return false;
+}
+
 int ManagedObjectImplementation::getPersistenceLevel() const{
 	// engine/core/ManagedObject.idl():  		return persistenceLevel;
 	return persistenceLevel;
@@ -763,8 +782,15 @@ void ManagedObjectAdapter::invokeMethod(uint32 methid, DistributedMethod* inv) {
 		break;
 	case RPC_ISPERSISTENT__:
 		{
-			
+
 			bool _m_res = isPersistent();
+			resp->insertBoolean(_m_res);
+		}
+		break;
+	case RPC_ISSAVEEXEMPTFROMDATABASE__:
+		{
+
+			bool _m_res = isSaveExemptFromDatabase();
 			resp->insertBoolean(_m_res);
 		}
 		break;
@@ -854,6 +880,10 @@ void ManagedObjectAdapter::setLastSaveTime(unsigned int timeval) {
 
 bool ManagedObjectAdapter::isPersistent() const {
 	return (static_cast<ManagedObject*>(stub))->isPersistent();
+}
+
+bool ManagedObjectAdapter::isSaveExemptFromDatabase() {
+	return (static_cast<ManagedObject*>(stub))->isSaveExemptFromDatabase();
 }
 
 int ManagedObjectAdapter::getPersistenceLevel() const {
