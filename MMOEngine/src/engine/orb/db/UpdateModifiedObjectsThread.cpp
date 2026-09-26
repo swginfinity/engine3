@@ -126,12 +126,18 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 			// defects in that (stale lastCRCSave, eviction with no row, children of a looted
 			// item never rewritten). A row that already exists for something now in a crate
 			// is left for the orphan purge, like the ones that predate this change.
+			//
+			// Full saves only (ObjectManager.saveMode 0, the default, set in no conf file). A delta
+			// save collects only per-thread modified lists, and an object whose dirty flag is never
+			// cleared never re-enters them -- so a looted item could be written a full save after the
+			// inventory that lists it. Read per batch: saveMode can change at runtime.
 			int skippedCount = 0;
+			const bool exemptionEnabled = Core::getIntProperty("ObjectManager.saveMode", 0) == 0;
 
 			for (int i = startOffset; i < endOffset; ++i) {
 				DistributedObject* object = objectsToUpdate->get(i);
 
-				if (object->isPersistent() && static_cast<ManagedObject*>(object)->isSaveExemptFromDatabase()) {
+				if (exemptionEnabled && object->isPersistent() && static_cast<ManagedObject*>(object)->isSaveExemptFromDatabase()) {
 					++skippedCount;
 
 					continue;
