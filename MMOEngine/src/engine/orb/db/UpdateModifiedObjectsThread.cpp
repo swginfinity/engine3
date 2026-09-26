@@ -133,6 +133,13 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 						objectManager->commitDestroyObjectToDB(object->_getObjectID());
 						object->_setDeletedFromDatabase(true);
 
+						// The row is gone, so the last-saved CRC no longer describes anything
+						// on disk. Without this, an object that leaves exemption in exactly the
+						// state it was last written in (moved into a crate and straight back)
+						// hits commitUpdatePersistentObjectToDB's unchanged-CRC early return,
+						// is never rewritten, and is lost at the next boot.
+						managedObject->setLastCRCSave(0);
+
 						++skippedRowsDeleted;
 					}
 
