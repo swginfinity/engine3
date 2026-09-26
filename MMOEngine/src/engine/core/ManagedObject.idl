@@ -176,8 +176,8 @@ class ManagedObject {
 	// only needs to exist so the generic save loop (typed ManagedObject*) can call
 	// it polymorphically without depending on Core3 game classes.
 	//
-	// Deliberately NOT @read: SceneObjectImplementation's override calls
-	// isPlayerCreature()/asCreatureObject(), which are themselves non-const, so
+	// Deliberately NOT @read: SceneObjectImplementation's override calls non-const
+	// SceneObject methods (getParent(), isCreatureObject(), asSceneObject()), so
 	// this must be non-const too or the override would silently fail to bind
 	// (mismatched constness = a different, non-virtual-matching signature).
 	public abstract boolean isSaveExemptFromDatabase() {

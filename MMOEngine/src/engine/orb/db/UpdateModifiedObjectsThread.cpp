@@ -122,7 +122,7 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 				DistributedObject* object = objectsToUpdate->get(i);
 				ManagedObject* managedObject = static_cast<ManagedObject*>(object);
 
-				if (managedObject->isSaveExemptFromDatabase()) {
+				if (object->isPersistent() && managedObject->isSaveExemptFromDatabase()) {
 					++skippedCount;
 
 					// A previous save may already have deleted this row; only issue
@@ -156,8 +156,14 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 			}
 
 			objectManager->info(true) << "thread " << threadId << " copied "
-				<< commas << j << " modified objects into ram in " << start.miliDifference(Time::MONOTONIC_TIME) << " ms"
-				<< "; skipped " << skippedCount << " snapshot-exempt objects (" << skippedRowsDeleted << " stale rows deleted)";
+				<< commas << j << " modified objects into ram in " << start.miliDifference(Time::MONOTONIC_TIME) << " ms";
+
+			// log(), not info(true): info(true) only forces the CONSOLE print, and INFO is above
+			// the core3.log file level on dev, TC and live. One line per worker per save cycle.
+			if (skippedCount > 0) {
+				objectManager->log() << "thread " << threadId << " save-exempt: skipped " << commas << skippedCount
+					<< " snapshot-container objects, deleted " << commas << skippedRowsDeleted << " stale rows";
+			}
 		}
 
 		start.updateToCurrentTime(Time::MONOTONIC_TIME);
