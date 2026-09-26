@@ -180,6 +180,10 @@ class ManagedObject {
 	// SceneObject methods (getParent(), isCreatureObject(), asSceneObject()), so
 	// this must be non-const too or the override would silently fail to bind
 	// (mismatched constness = a different, non-virtual-matching signature).
+	// @dirty keeps it non-const but makes the stub use _getImplementationForRead():
+	// plain _getImplementation() re-marks the object modified, and this runs on a
+	// save worker, whose own modified list is never collected (same as setLastCRCSave).
+	@dirty
 	public abstract boolean isSaveExemptFromDatabase() {
 		return false;
 	}

@@ -394,7 +394,7 @@ bool ManagedObject::isPersistent() const {
 }
 
 bool ManagedObject::isSaveExemptFromDatabase() {
-	ManagedObjectImplementation* _implementation = static_cast<ManagedObjectImplementation*>(_getImplementation());
+	ManagedObjectImplementation* _implementation = static_cast<ManagedObjectImplementation*>(_getImplementationForRead());
 	if (unlikely(_implementation == nullptr)) {
 		if (!deployed)
 			throw ObjectNotDeployedException(this);
