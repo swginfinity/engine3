@@ -137,10 +137,23 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 			for (int i = startOffset; i < endOffset; ++i) {
 				DistributedObject* object = objectsToUpdate->get(i);
 
-				if (exemptionEnabled && object->isPersistent() && static_cast<ManagedObject*>(object)->isSaveExemptFromDatabase()) {
-					++skippedCount;
+				if (exemptionEnabled && object->isPersistent()) {
+					// The try sits INSIDE the loop: the outer catch would abandon the rest of this
+					// worker's batch, and on the final shutdown save that is lost state. An exception
+					// from the exemption check means "save it" -- the pre-filter behaviour.
+					bool exempt = false;
 
-					continue;
+					try {
+						exempt = static_cast<ManagedObject*>(object)->isSaveExemptFromDatabase();
+					} catch (...) {
+						exempt = false;
+					}
+
+					if (exempt) {
+						++skippedCount;
+
+						continue;
+					}
 				}
 
 				if (object->isPersistent() && objectManager->commitUpdatePersistentObjectToDB(object) == 0)
