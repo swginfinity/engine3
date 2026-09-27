@@ -57,6 +57,9 @@ namespace engine {
 	 ThreadLocal<uint64> lastAssociation;
 
  protected:
+	 // Infinity (2026-09-27): DatabaseManager::dropDatabase must close the handle before dbremove (the destructor does not).
+	 friend class DatabaseManager;
+
 	 virtual void closeDatabase();
 	 virtual void openDatabase(const engine::db::berkeley::DatabaseConfig& dbConfig);
 	 virtual void openDatabase();

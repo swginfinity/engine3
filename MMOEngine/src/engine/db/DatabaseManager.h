@@ -232,6 +232,9 @@ namespace engine {
 
 		int compressDatabase(const String& name, engine::db::berkeley::Transaction* transaction);
 
+		// Infinity (2026-09-27): offline only -- unregister an EMPTY database and remove its file.
+		int dropDatabase(const String& name);
+
 		void setManagedObjectsWithHashCodeMembersFlag(engine::db::berkeley::Transaction* transaction);
 		void convertDatabasesToHashCodeMembers();
 

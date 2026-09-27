@@ -4,6 +4,8 @@
 */
 #include "DatabaseManager.h"
 #include "engine/core/Core.h"
+#include <cstring>
+#include "system/io/File.h"
 
 using namespace engine::db;
 using namespace engine::db::berkeley;
@@ -846,6 +848,159 @@ int DatabaseManager::compressDatabase(const String& name, engine::db::berkeley::
 	unconstName.toBinaryStream(nameData);
 
 	databaseDirectory->putData(stream, nameData, transaction);
+
+	return 0;
+}
+
+// Infinity (2026-09-27): drop an EMPTY database from the registry and remove its file. Offline tools only
+// (core3 dropdatabase). Order: the registry row is deleted and committed FIRST, then the file is removed
+// through BDB (logged, so recovery-safe). A failure between the two leaves an unregistered file that
+// loadDatabases never opens -- never a registered name with no file, which the next open would recreate.
+// Returns 0, or non-zero after logging why.
+int DatabaseManager::dropDatabase(const String& name) {
+	Locker _locker(this);
+
+	if (!nameDirectory.contains(name)) {
+		error() << "dropDatabase: " << name << " is not in the registry";
+		return 1;
+	}
+
+	const uint16 id = nameDirectory.get(name);
+	LocalDatabase* database = databases.get(id);
+
+	if (database == nullptr) {
+		error() << "dropDatabase: " << name << " (id 0x" << hex << id << ") is registered but not loaded";
+		return 2;
+	}
+
+	{
+		// A raw cursor, not LocalDatabaseIterator: its getNextKey() returns false on ANY cursor error, so a read
+		// failure would look "empty" (free-lane review). Only DB_NOTFOUND on the first DB_NEXT means empty.
+		DB* dbp = database->getDatabaseHandle()->getDatabaseHandle();
+		DBC* cursor = nullptr;
+		int cret = dbp->cursor(dbp, nullptr, &cursor, 0);
+
+		if (cret != 0) {
+			error() << "dropDatabase: cannot open a cursor on " << name << ": " << db_strerror(cret) << "; refusing";
+			return 3;
+		}
+
+		DBT k, d;
+		memset(&k, 0, sizeof(k));
+		memset(&d, 0, sizeof(d));
+		d.flags = DB_DBT_PARTIAL; // dlen 0: the key alone answers the question
+
+		cret = cursor->get(cursor, &k, &d, DB_NEXT);
+		cursor->close(cursor);
+
+		if (cret == 0) {
+			error() << "dropDatabase: " << name << " has records; refusing to drop a non-empty database";
+			return 3;
+		}
+
+		if (cret != DB_NOTFOUND) {
+			error() << "dropDatabase: reading " << name << " failed: " << db_strerror(cret) << "; cannot prove it is empty, refusing";
+			return 3;
+		}
+	}
+
+	uint64 fullKey = database->getDatabaseType();
+
+	if (database->hasCompressionEnabled())
+		fullKey |= COMPRESSION_FLAG;
+
+	fullKey = (fullKey << 32) + id;
+
+	// The registry row this key names must be THIS name (a duplicate id would otherwise delete another row).
+	{
+		ObjectOutputStream probeKey(8, 8);
+		TypeInfo<uint64>::toBinaryStream(&fullKey, &probeKey);
+		ObjectInputStream value;
+		int gret = 0;
+
+		try {
+			gret = databaseDirectory->getData(&probeKey, &value);
+		} catch (const Exception& e) {
+			error() << "dropDatabase: reading the registry row for " << name << " threw: " << e.getMessage() << "; refusing";
+			return 4;
+		}
+
+		if (gret != 0) {
+			error() << "dropDatabase: registry row for " << name << " (key 0x" << hex << fullKey << ") not readable: " << db_strerror(gret) << "; refusing";
+			return 4;
+		}
+
+		String storedName;
+		storedName.parseFromBinaryStream(&value);
+
+		if (storedName != name) {
+			error() << "dropDatabase: registry key 0x" << hex << fullKey << " names '" << storedName << "', not '" << name << "'; refusing";
+			return 4;
+		}
+	}
+
+	// ONE transaction for the registry delete AND the file removal (Opus review): two commits left a window where
+	// a kill produced an unregistered file, which purgeorphans refuses and a rerun of this tool cannot finish.
+	// Recovery now applies all of it or none.
+	// Close the handle FIRST: ~LocalDatabase does NOT close it (its close is commented out), and an open handle
+	// keeps the file's handle lock, so dbremove blocked forever on dev.
+	const String fileName = database->getDatabaseFileName();
+	database->closeDatabase();
+	databases.drop(id);
+	nameDirectory.drop(name);
+	delete database; // this process exits after the tool; a refusal below leaves the on-disk state untouched
+
+	engine::db::berkeley::Transaction* transaction = startTransaction();
+	DB_TXN* txn = transaction->getDBTXN();
+
+	// A holder the pre-flight check could not see (another user's process) would otherwise make dbremove wait
+	// forever; with a timeout it fails with DB_LOCK_NOTGRANTED and the transaction is aborted.
+	txn->set_timeout(txn, 30 * 1000 * 1000, DB_SET_LOCK_TIMEOUT);
+
+	ObjectOutputStream* keyOut = new ObjectOutputStream(8, 8);
+	TypeInfo<uint64>::toBinaryStream(&fullKey, keyOut);
+
+	databaseDirectory->deleteData(keyOut, transaction);
+
+	commitLocalTransaction(transaction); // the delete runs in a child of `transaction`
+
+	DB_ENV* env = databaseEnvironment->getDatabaseEnvironmentHandle();
+	int ret = env->dbremove(env, txn, fileName.toCharArray(), nullptr, 0);
+
+	if (ret != 0) {
+		transaction->abort();
+		error() << "dropDatabase: removing " << fileName << " failed: " << db_strerror(ret) << "; transaction aborted, registry and file unchanged";
+		return 5;
+	}
+
+	if (commitTransaction(transaction) != 0) {
+		error() << "dropDatabase: commit failed for " << name << "; BDB rolls the whole drop back (registry and file unchanged)";
+		return 4;
+	}
+
+	// commitLocalTransaction is void and aborts a failed delete quietly, so PROVE the row is gone, and the file.
+	try {
+		ObjectOutputStream probeKey(8, 8);
+		TypeInfo<uint64>::toBinaryStream(&fullKey, &probeKey);
+		ObjectInputStream value;
+		const int gret = databaseDirectory->getData(&probeKey, &value);
+
+		if (gret != DB_NOTFOUND) {
+			error() << "dropDatabase: the registry row for " << name << " is still present after the commit, and the file was removed --"
+				" the next boot recreates it empty under that row (harmless); rerun after restoring nothing";
+			return 6;
+		}
+	} catch (const Exception& e) {
+		error() << "dropDatabase: could not re-read the registry after the commit: " << e.getMessage() << "; check it by hand";
+		return 6;
+	}
+
+	if (File("databases/" + fileName).exists()) { // the environment is opened as "databases" (DatabaseManager.cpp:108)
+		error() << "dropDatabase: " << fileName << " still exists after the commit";
+		return 6;
+	}
+
+	info(true) << "dropDatabase: " << name << " (id 0x" << hex << id << ") removed from the registry and " << fileName << " deleted";
 
 	return 0;
 }
