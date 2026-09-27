@@ -132,6 +132,7 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 			// cleared never re-enters them -- so a looted item could be written a full save after the
 			// inventory that lists it. Read per batch: saveMode can change at runtime.
 			int skippedCount = 0;
+			int exemptionErrors = 0;
 			const bool exemptionEnabled = Core::getIntProperty("ObjectManager.saveMode", 0) == 0;
 
 			for (int i = startOffset; i < endOffset; ++i) {
@@ -147,6 +148,7 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 						exempt = static_cast<ManagedObject*>(object)->isSaveExemptFromDatabase();
 					} catch (...) {
 						exempt = false;
+						++exemptionErrors;
 					}
 
 					if (exempt) {
@@ -168,6 +170,13 @@ void UpdateModifiedObjectsThread::commitObjectsToDatabase() {
 			if (skippedCount > 0) {
 				objectManager->log() << "thread " << threadId << " save-exempt: skipped " << commas << skippedCount
 					<< " snapshot-container objects (not written, left dirty)";
+			}
+
+			// Counted, not logged per object: one line per worker per save. Without it a check that
+			// throws every time would switch the filter off with nothing in any log.
+			if (exemptionErrors > 0) {
+				objectManager->error() << "thread " << threadId << " save-exempt: exemption check threw for "
+					<< commas << exemptionErrors << " objects; saved them unfiltered";
 			}
 		}
 
