@@ -957,12 +957,27 @@ int DatabaseManager::dropDatabase(const String& name) {
 	// forever; with a timeout it fails with DB_LOCK_NOTGRANTED and the transaction is aborted.
 	txn->set_timeout(txn, 30 * 1000 * 1000, DB_SET_LOCK_TIMEOUT);
 
-	ObjectOutputStream* keyOut = new ObjectOutputStream(8, 8);
-	TypeInfo<uint64>::toBinaryStream(&fullKey, keyOut);
+	// The registry delete is a direct DB->del in the master transaction, NOT deleteData + commitLocalTransaction:
+	// that path runs a child transaction that aborts a failed delete silently (void), and it would flush any other
+	// queued work into this drop (free-lane review of the first single-transaction version).
+	{
+		ObjectOutputStream keyOut(8, 8);
+		TypeInfo<uint64>::toBinaryStream(&fullKey, &keyOut);
 
-	databaseDirectory->deleteData(keyOut, transaction);
+		DBT k;
+		memset(&k, 0, sizeof(k));
+		k.data = (void*) keyOut.getBuffer();
+		k.size = keyOut.size();
 
-	commitLocalTransaction(transaction); // the delete runs in a child of `transaction`
+		DB* registry = databaseDirectory->getDatabaseHandle()->getDatabaseHandle();
+		const int dret = registry->del(registry, txn, &k, 0);
+
+		if (dret != 0) {
+			transaction->abort();
+			error() << "dropDatabase: deleting the registry row for " << name << " failed: " << db_strerror(dret) << "; transaction aborted, nothing changed";
+			return 4;
+		}
+	}
 
 	DB_ENV* env = databaseEnvironment->getDatabaseEnvironmentHandle();
 	int ret = env->dbremove(env, txn, fileName.toCharArray(), nullptr, 0);
@@ -978,7 +993,7 @@ int DatabaseManager::dropDatabase(const String& name) {
 		return 4;
 	}
 
-	// commitLocalTransaction is void and aborts a failed delete quietly, so PROVE the row is gone, and the file.
+	// Defence in depth: prove from disk that the row and the file are both gone.
 	try {
 		ObjectOutputStream probeKey(8, 8);
 		TypeInfo<uint64>::toBinaryStream(&fullKey, &probeKey);
@@ -987,7 +1002,7 @@ int DatabaseManager::dropDatabase(const String& name) {
 
 		if (gret != DB_NOTFOUND) {
 			error() << "dropDatabase: the registry row for " << name << " is still present after the commit, and the file was removed --"
-				" the next boot recreates it empty under that row (harmless); rerun after restoring nothing";
+				" the next boot recreates it empty under that row (harmless, and this tool can then run again)";
 			return 6;
 		}
 	} catch (const Exception& e) {
