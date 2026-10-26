@@ -57,9 +57,9 @@ namespace engine {
 
 		// True if the failure happened BEFORE any valid fragment was
 		// accepted — i.e., the very first parse hit an unreasonable
-		// totalSize. Distinguishes hostile-first-fragment (correct
-		// response: disconnect the client) from mid-message corruption
-		// (correct response: drop the message, keep the connection).
+		// totalSize, as opposed to mid-message corruption. Diagnostic only:
+		// both are dropped and the connection kept (GH #2327 — the
+		// first-parse case was legitimate clients, never disconnect it).
 		bool isPoisonedOnFirstParse() const { return poisoned && totalSize <= 0; }
 
 		BasePacket* getFragment();

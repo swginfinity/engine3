@@ -72,7 +72,7 @@ namespace engine {
 
 		// Rejected fragments on this connection. Bounds the full hex-dump
 		// logging now that a rejection no longer disconnects (GH #2327).
-		int fragmentRejects;
+		uint32 fragmentRejects;
 
 		Vector<BasePacket*> sendBuffer;
 #ifdef LOCKFREE_BCLIENT_BUFFERS
