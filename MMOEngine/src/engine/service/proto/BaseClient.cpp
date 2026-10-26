@@ -121,6 +121,7 @@ void BaseClient::initializeCommon(const String& addr) {
 
 	fragmentedPacket = nullptr;
 	lastFragmentedSeq = -1;
+	fragmentRejects = 0;
 
 	checkupEvent = nullptr;
 	netcheckupEvent = nullptr;
@@ -1053,12 +1054,22 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 		const bool firstParse =
 			wasFreshAccumulator && fragmentedPacket->isPoisonedOnFirstParse();
 
-		error() << "addFragment failed: " << fragmentedPacket->getError()
-			<< "; mid-message=" << (!wasFreshAccumulator)
-			<< "; firstParse=" << firstParse
-			<< "; seq=" << (uint16) seq
-			<< "; fragmentedPacket: " << *fragmentedPacket << endl
-			<< "packet: " << *pack;
+		// Full dumps for the first few rejections, then one line every
+		// 100th: without the disconnect nothing else bounds this per client.
+		++fragmentRejects;
+
+		if (fragmentRejects <= 5) {
+			error() << "addFragment failed: " << fragmentedPacket->getError()
+				<< "; mid-message=" << (!wasFreshAccumulator)
+				<< "; firstParse=" << firstParse
+				<< "; seq=" << (uint16) seq
+				<< "; rejects=" << fragmentRejects
+				<< "; fragmentedPacket: " << *fragmentedPacket << endl
+				<< "packet: " << *pack;
+		} else if (fragmentRejects % 100 == 0) {
+			error() << "addFragment failed: " << fragmentRejects
+				<< " fragments rejected on this connection (dumps suppressed after 5)";
+		}
 
 		// Poison and drop, never disconnect (GH #2327). A fresh accumulator
 		// whose first totalSize parse is unreasonable used to throw and

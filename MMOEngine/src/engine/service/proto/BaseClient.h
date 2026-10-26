@@ -70,6 +70,10 @@ namespace engine {
 		// continuation bytes as a fresh first-fragment.
 		int lastFragmentedSeq;
 
+		// Rejected fragments on this connection. Bounds the full hex-dump
+		// logging now that a rejection no longer disconnects (GH #2327).
+		int fragmentRejects;
+
 		Vector<BasePacket*> sendBuffer;
 #ifdef LOCKFREE_BCLIENT_BUFFERS
 		typedef boost::lockfree::queue<BasePacket*, boost::lockfree::fixed_sized<false> > packet_buffer_t;

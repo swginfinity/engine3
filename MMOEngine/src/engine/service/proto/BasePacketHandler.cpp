@@ -86,15 +86,18 @@ void BasePacketHandler::handlePacket(BaseClient* client, Packet* pack) {
 			processBufferedPackets(client);
 			break;
 		case 0x0D00: { //Fragmented
-			// Read the outer reliable-layer seq before validatePacket
-			// consumes it. parseNetShort(offset) reads without advancing
-			// and converts from network (BE) to host byte order — matches
-			// validatePacket's parseNetShort() at BaseClient.cpp.
-			// Seq sits at offset 2 (right after the 2-byte opcode).
-			uint32 fragSeq = pack->parseNetShort(2);
-
 			if (!client->processRecieve(pack))
 				return;
+
+			// Read the outer reliable-layer seq AFTER processRecieve
+			// (which decrypts and decompresses) and before validatePacket
+			// consumes it. Read before decryption it was not the reliable
+			// seq at all, so the boundary watermark compared two different
+			// domains (GH #2327 review). parseNetShort(offset) reads without
+			// advancing and converts from network (BE) to host byte order —
+			// matches validatePacket's parseNetShort() at BaseClient.cpp.
+			// Seq sits at offset 2 (right after the 2-byte opcode).
+			uint32 fragSeq = pack->parseNetShort(2);
 
 			if (!client->validatePacket(pack))
 				return;
