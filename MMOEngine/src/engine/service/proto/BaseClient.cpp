@@ -122,6 +122,7 @@ void BaseClient::initializeCommon(const String& addr) {
 	fragmentedPacket = nullptr;
 	lastFragmentedSeq = -1;
 	fragmentRejects = 0;
+	fragmentContiguousDrops = 0;
 
 	checkupEvent = nullptr;
 	netcheckupEvent = nullptr;
@@ -1029,6 +1030,26 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 			uint16 expected = (uint16) (lastFragmentedSeq + 1);
 			if ((uint16) seq == expected) {
 				lastFragmentedSeq = (int) (uint16) seq;
+
+				// Count these drops so they can be measured (GH #2327
+				// review): contiguity cannot tell a continuation from the
+				// first fragment of a NEXT message. headerPlausible=1 means
+				// the dropped fragment's first 4 bytes would have parsed as
+				// a valid totalSize, i.e. possibly a lost legitimate message.
+				++fragmentContiguousDrops;
+
+				if (fragmentContiguousDrops <= 5 || fragmentContiguousDrops % 100 == 0) {
+					const int offs = pack->getOffset();
+					uint32 claimed = 0;
+
+					if (pack->size() - offs >= 4)
+						claimed = pack->parseNetInt(offs);
+
+					error() << "dropped contiguous fragment after poison: seq=" << (uint16) seq
+						<< "; headerPlausible=" << (claimed > 0 && claimed <= 1500000)
+						<< "; drops=" << fragmentContiguousDrops;
+				}
+
 				return nullptr;
 			}
 		}

@@ -74,6 +74,10 @@ namespace engine {
 		// logging now that a rejection no longer disconnects (GH #2327).
 		uint32 fragmentRejects;
 
+		// Fragments dropped as contiguous continuations of a poisoned
+		// message on this connection (logged capped; GH #2327).
+		uint32 fragmentContiguousDrops;
+
 		Vector<BasePacket*> sendBuffer;
 #ifdef LOCKFREE_BCLIENT_BUFFERS
 		typedef boost::lockfree::queue<BasePacket*, boost::lockfree::fixed_sized<false> > packet_buffer_t;
