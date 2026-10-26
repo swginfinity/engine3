@@ -1050,34 +1050,27 @@ BasePacket* BaseClient::receiveFragmentedPacket(uint32 seq, Packet* pack) {
 	}
 
 	if (!fragmentedPacket->addFragment(pack)) {
-		const bool hostileFirstFragment =
+		const bool firstParse =
 			wasFreshAccumulator && fragmentedPacket->isPoisonedOnFirstParse();
 
 		error() << "addFragment failed: " << fragmentedPacket->getError()
 			<< "; mid-message=" << (!wasFreshAccumulator)
-			<< "; hostile=" << hostileFirstFragment
+			<< "; firstParse=" << firstParse
+			<< "; seq=" << (uint16) seq
 			<< "; fragmentedPacket: " << *fragmentedPacket << endl
 			<< "packet: " << *pack;
 
-		if (hostileFirstFragment) {
-			// First parse on a fresh accumulator hit an unreasonable
-			// totalSize. Real corruption fails CRC at the lower layer,
-			// so this looks deliberate. Tear down the connection.
-			if (fragmentedPacket->getReferenceCount())
-				fragmentedPacket->release();
-			else
-				delete fragmentedPacket;
-			fragmentedPacket = nullptr;
-			lastFragmentedSeq = -1;
-
-			throw FragmentedPacketParseException("hostile oversize first-fragment");
-		}
-
-		// Mid-message poison: the accumulator is now flagged poisoned and
-		// will silently drop subsequent fragments. Record this seq so
-		// the boundary detection above can recognize continuations and
-		// skip until the next logical message begins. Mask to uint16 to
-		// keep the watermark in canonical 16-bit space.
+		// Poison and drop, never disconnect (GH #2327). A fresh accumulator
+		// whose first totalSize parse is unreasonable used to throw and
+		// force-disconnect the client as "hostile". On live (2026-10-24..26)
+		// every such case was a legitimate client: a CONTINUATION fragment
+		// (UTF-16 command text) arriving on a fresh accumulator, and the
+		// disconnect made the client reconnect and hit it again within
+		// seconds (~30 sessions killed in 40 min for one player). The bad
+		// size is never allocated, so dropping is as safe as disconnecting.
+		// Treat it exactly like mid-message poison: the accumulator stays
+		// poisoned, this seq becomes the watermark, and boundary detection
+		// #2 above drops contiguous continuations until the next message.
 		lastFragmentedSeq = (int) (uint16) seq;
 		return nullptr;
 	}

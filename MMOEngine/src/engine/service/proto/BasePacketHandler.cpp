@@ -497,14 +497,11 @@ int BasePacketHandler::handleFragmentedPacket(BaseClient* client, uint32 seq, Pa
 		} /*else if (pack->size() < 485)
 		throw Exception("incomplete fragmented packet");*/
 	} catch (const FragmentedPacketParseException& e) {
-		// receiveFragmentedPacket only throws now in the hostile-first-
-		// fragment case (a fresh accumulator's first totalSize parse hit
-		// an unreasonable value). Mid-message corruption no longer
-		// throws — the accumulator is poisoned in place and continuations
-		// are dropped silently until the next message boundary, so
-		// reaching this catch means the client is sending malformed data
-		// the lower-layer CRC check did not reject. Treat as deliberate
-		// and disconnect.
+		// receiveFragmentedPacket no longer throws this (GH #2327: the
+		// "hostile first-fragment" case was legitimate clients, and the
+		// disconnect caused a reconnect loop). Every parse failure is now
+		// poisoned and dropped in place. Kept only so a future throw is
+		// logged (and the client still disconnected) rather than escaping.
 		StringBuffer buf;
 
 		buf << "BasePacketHandler::handleFragmentedPacket - hostile fragment: " << e.getMessage();
