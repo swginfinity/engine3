@@ -609,6 +609,11 @@ int String::regexIndexOf(const String& regex) const {
 }
 
 String String::replaceAll(const String& regex, const String& replacement) const {
+	// Infinity (GH #2263): StringBuffer::indexOf(regex, ...) throws ArrayIndexOutOfBounds for fromIndex >= size(),
+	// so an empty receiver always threw. Nothing to replace in an empty string.
+	if (isEmpty())
+		return *this;
+
 	StringBuffer str(*this);
 
 	int pos = npos;
