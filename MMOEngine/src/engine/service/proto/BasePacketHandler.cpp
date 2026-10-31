@@ -349,6 +349,15 @@ void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool
 
 		pack->setOffset(offset + blockSize);
 	}
+
+	// GH #2328: getBufferedPacket already acknowledged this seq and advanced
+	// clientSequence, so a replay that finds no matching block loses it for good.
+	// The live pass parsed the same bytes to buffer it, so this should not fire;
+	// if it does, say so instead of dropping the message silently.
+	if (replaySeq >= 0) {
+		error() << "handleMultiPacket: replay of buffered seq " << replaySeq
+			<< " found no matching reliable block: " << *pack;
+	}
 }
 
 void BasePacketHandler::processBufferedPackets(BaseClient* client) {
@@ -389,7 +398,10 @@ void BasePacketHandler::processBufferedPackets(BaseClient* client) {
 				handleDataChannelPacket(client, pack);
 		} catch (Exception& e) {
 			client->error() << "processBufferedPackets - exception replaying buffered seq "
-				<< pack->getSequence() << ": " << e.getMessage();
+				<< pack->getSequence() << ": " << e.getMessage() << " " << *pack;
+			auto trace = e.getStackTrace();
+
+			client->error() << "STACK: " << trace.toStringData();
 		} catch (...) {
 			delete pack;
 
