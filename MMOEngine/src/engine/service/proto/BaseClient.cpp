@@ -941,7 +941,11 @@ bool BaseClient::validatePacket(Packet* pack) {
 		return false;
 	} else if (seq > (clientSequence & 0xFFFF)) {
 		BasePacket* packet = new BasePacket(pack, seq);
-		receiveBuffer.put(packet);
+		// receiveBuffer is NO_DUPLICATE: put() returns npos and does NOT take
+		// ownership when this seq is already buffered (a resend or a multi that
+		// carries the same seq twice). Free the copy or it leaks (GH #2328).
+		if (receiveBuffer.put(packet) < 0)
+			delete packet;
 
 		/*StringBuffer msg3;
 		msg3 << "READ buffer (";
@@ -976,7 +980,7 @@ bool BaseClient::validatePacket(Packet* pack) {
 	return true;
 }
 
-Packet* BaseClient::getBufferedPacket() {
+BasePacket* BaseClient::getBufferedPacket() {
 	if (!receiveBuffer.isEmpty()) {
 		BasePacket* packet = receiveBuffer.get(0);
 

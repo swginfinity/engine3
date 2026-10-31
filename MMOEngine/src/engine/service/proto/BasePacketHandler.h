@@ -40,7 +40,9 @@ namespace engine {
 
 		void processBufferedPackets(BaseClient* client);
 
-		void handleMultiPacket(BaseClient* client, Packet* pack, bool validatePackets = true);
+		// replaySeq >= 0: replaying ONE buffered reliable block out of a multi
+		// (the seq the multi was buffered under); every other block is skipped.
+		void handleMultiPacket(BaseClient* client, Packet* pack, bool validatePackets = true, sys::int32 replaySeq = -1);
 
 		void handleDataChannelPacket(BaseClient* client, Packet* pack);
 		void handleDataChannelMultiPacket(BaseClient* client, Packet* pack, sys::uint16 size);

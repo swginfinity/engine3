@@ -135,7 +135,7 @@ namespace engine {
 
 		void read(Packet* pack, bool doLock = true);
 
-		Packet* getBufferedPacket();
+		BasePacket* getBufferedPacket();
 
 		BasePacket* receiveFragmentedPacket(uint32 seq, Packet* pack);
 

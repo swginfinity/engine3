@@ -248,13 +248,29 @@ void BasePacketHandler::doAcknowledge(BaseClient* client, Packet* pack) {
 #endif
 }
 
-void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool validatePackets) {
+void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool validatePackets, int32 replaySeq) {
 	while (pack->hasData()) {
 		uint8 blockSize = pack->parseByte();
 
 		int offset = pack->getOffset();
 
 		uint16 opcode = pack->parseShort();
+
+		// Replay of ONE buffered reliable block (GH #2328). The buffered copy is the
+		// whole multi, but it was buffered under the seq of a single block; the
+		// other blocks were already handled (or are buffered under their own seq),
+		// so re-handling them re-delivers messages and re-feeds fragments. Skip
+		// everything except the block whose seq matches, handle it, and stop.
+		bool replayTarget = false;
+
+		if (replaySeq >= 0) {
+			if ((opcode == 0x0900 || opcode == 0x0D00) && pack->parseNetShort(pack->getOffset()) == (uint16) replaySeq) {
+				replayTarget = true;
+			} else {
+				pack->setOffset(offset + blockSize);
+				continue;
+			}
+		}
 
 		switch (opcode) {
 			case 0x0900: //Data Channel
@@ -328,6 +344,9 @@ void BasePacketHandler::handleMultiPacket(BaseClient* client, Packet* pack, bool
 				break;
 		}
 
+		if (replayTarget)
+			return;
+
 		pack->setOffset(offset + blockSize);
 	}
 }
@@ -336,33 +355,46 @@ void BasePacketHandler::processBufferedPackets(BaseClient* client) {
 //	Logger::console.info("processing buffered packets", true);
 
 	while (true) {
-		Packet* pack = client->getBufferedPacket();
+		BasePacket* pack = client->getBufferedPacket();
 		if (pack == nullptr)
 			break;
 
-		if (pack->parseShort(0) == 0x0300) {
-			pack->setOffset(2);
+		// GH #2328: one bad buffered packet no longer aborts the drain loop (and the
+		// caller's multi loop); it is logged and the next buffered packet is tried.
+		try {
+			if (pack->parseShort(0) == 0x0300) {
+				pack->setOffset(2);
 
-			/*uint8 blockSize = pack->parseByte();
-			System::out << (int) blockSize << " : " << pack->toString() << "\n";
+				/*uint8 blockSize = pack->parseByte();
+				System::out << (int) blockSize << " : " << pack->toString() << "\n";
 
-			handleDataChannelMultiPacket(client, pack, blockSize);*/
+				handleDataChannelMultiPacket(client, pack, blockSize);*/
 
-			//Logger::console.info("parsing multi in buffered packets: " + pack->toStringData(), true);
+				//Logger::console.info("parsing multi in buffered packets: " + pack->toStringData(), true);
 
-			handleMultiPacket(client, pack, false);
-		} else if (pack->parseShort(0) == 0x0D00) {
-			// Seq sits at offset 2 (right after the 2-byte opcode).
-			// parseNetShort: wire is BE; matches validatePacket.
-			uint32 fragSeq = pack->parseNetShort(2);
-			pack->setOffset(4);
-			//pack->shiftOffset(4);
-			if (handleFragmentedPacket(client, fragSeq, pack)) {
-				client->error() <<
-					"could not parse frag in processBufferedPackets: " << *pack;
-			}
-		} else
-			handleDataChannelPacket(client, pack);
+				// The buffered copy is the WHOLE multi but was buffered under the seq of
+				// ONE of its blocks; replay only that block.
+				handleMultiPacket(client, pack, false, (int32) pack->getSequence());
+			} else if (pack->parseShort(0) == 0x0D00) {
+				// Seq sits at offset 2 (right after the 2-byte opcode).
+				// parseNetShort: wire is BE; matches validatePacket.
+				uint32 fragSeq = pack->parseNetShort(2);
+				pack->setOffset(4);
+				//pack->shiftOffset(4);
+				if (handleFragmentedPacket(client, fragSeq, pack)) {
+					client->error() <<
+						"could not parse frag in processBufferedPackets: " << *pack;
+				}
+			} else
+				handleDataChannelPacket(client, pack);
+		} catch (Exception& e) {
+			client->error() << "processBufferedPackets - exception replaying buffered seq "
+				<< pack->getSequence() << ": " << e.getMessage();
+		} catch (...) {
+			delete pack;
+
+			throw;
+		}
 
 		delete pack;
 	}
@@ -435,6 +467,8 @@ void BasePacketHandler::handleDataChannelMultiPacket(BaseClient* client, Packet*
 			pack->shiftOffset(blockSize);
 		}
 	} else if (opCount == 0x0D00) {
+		// GH #2328 residual: this nested 0x0D carries its own inner seq, which is not
+		// validated here and is not matched by the replaySeq filter in handleMultiPacket.
 		// Seq sits at the current offset before we shift past it.
 		// parseNetShort: wire is BE; matches validatePacket.
 		uint32 fragSeq = pack->parseNetShort(pack->getOffset());
