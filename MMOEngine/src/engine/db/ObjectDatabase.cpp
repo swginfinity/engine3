@@ -266,7 +266,7 @@ bool ObjectDatabaseIterator::getNextKeyAndValue(uint64& key, ObjectInputStream* 
 	try {
 		Locker locker(&Environment::guard);
 
-		if (cursor->getNext(&this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getNext(&this->key, &this->data, lockMode), "ObjectDatabaseIterator::getNextKeyAndValue")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;

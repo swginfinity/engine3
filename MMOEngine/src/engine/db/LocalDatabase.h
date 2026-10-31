@@ -96,7 +96,9 @@ namespace engine {
 	 void associate(LocalDatabase* secondaryDB, int (*callback)(DB *secondary,
 				     const DBT *key, const DBT *data, DBT *result));
 
-	 static void uncompress(void* data, uint64 size, ObjectInputStream* decompressedData);
+	 // returns false when the stream could not be inflated to its end (the output stream is left
+	 // exactly as before in every case; the false return is observability only, GH #2219)
+	 static bool uncompress(void* data, uint64 size, ObjectInputStream* decompressedData);
 	 static Stream* compress(Stream* data);
 
 	 virtual bool isObjectDatabase() const {
@@ -146,6 +148,14 @@ namespace engine {
 
 	 LocalDatabase* localDatabase;
 
+	 // last cursor status that was neither 0 nor DB_NOTFOUND (GH #2219); 0 if none
+	 int lastCursorError;
+
+	 // true when a cursor op returned no record. Logs once (and records lastCursorError) when
+	 // the status is a real error rather than DB_NOTFOUND. Never throws: callers sit inside
+	 // try blocks whose catch(...) returns true.
+	 bool cursorReturnedNoRecord(int ret, const char* op);
+
  public:
 	 LocalDatabaseIterator(engine::db::berkeley::Transaction* transaction, LocalDatabase* database);
 	 LocalDatabaseIterator(LocalDatabase* database, const berkeley::CursorConfig& config = berkeley::CursorConfig::DEFAULT, bool useCurrentThreadTransaction = false);
@@ -153,6 +163,10 @@ namespace engine {
 	 ~LocalDatabaseIterator();
 
 	 void resetIterator();
+
+	 inline int getLastCursorError() const {
+		 return lastCursorError;
+	 }
 
 	 bool getNextKeyAndValue(ObjectInputStream* keyStream, ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_COMMITTED, bool compressed = false);
 	 bool getNextValue(ObjectInputStream* data, uint32 lockMode = berkeley::LockMode::READ_UNCOMMITTED);

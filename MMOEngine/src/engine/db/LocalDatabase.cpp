@@ -274,11 +274,12 @@ Stream* LocalDatabase::compress(Stream* data) {
 	return outputStream;
 }
 
-void LocalDatabase::uncompress(void* data, uint64 size, ObjectInputStream* decompressedData) {
+bool LocalDatabase::uncompress(void* data, uint64 size, ObjectInputStream* decompressedData) {
 	static const int zlibChunkSize = Core::getIntProperty("BerkeleyDB.zlibChunkSize", CHUNK_SIZE);
 
 	decompressedData->reset();
 	std::size_t totalSize = 0;
+	int lastRet = Z_OK;
 
 	try {
 		z_stream packet{};
@@ -299,14 +300,18 @@ void LocalDatabase::uncompress(void* data, uint64 size, ObjectInputStream* decom
 
 			int ret = inflate(&packet, Z_NO_FLUSH);
 
+			lastRet = ret;
+
 			if (ret == Z_DATA_ERROR) {
-				Logger::console.error("could not decompress stream from database returning uncompressed");
+				Logger::console.error() << "LocalDatabase::uncompress: could not decompress stream from database returning uncompressed (ret "
+					<< ret << " " << zError(ret) << ", " << (packet.msg != nullptr ? packet.msg : "no zlib message") << ", "
+					<< size << " bytes in, " << totalSize << " out)";
 
 				//decompressedData->writeStream((char*)data, size);
 
 				inflateEnd(&packet);
 
-				return;
+				return false;
 			}
 
 			assert(ret == Z_OK || ret == Z_STREAM_END);
@@ -323,7 +328,20 @@ void LocalDatabase::uncompress(void* data, uint64 size, ObjectInputStream* decom
 		decompressedData->reset();
 	} catch (...) {
 		Logger::console.fatal("LocalDatabase::uncompress");
+
+		return false;
 	}
+
+	// NDEBUG compiles the assert above out, so a truncated or otherwise failed inflate (Z_OK left
+	// over, Z_BUF_ERROR, Z_MEM_ERROR, Z_NEED_DICT, Z_STREAM_ERROR) hands back a short buffer silently
+	if (lastRet != Z_STREAM_END) {
+		Logger::console.error() << "LocalDatabase::uncompress: inflate did not reach end of stream (ret " << lastRet << " "
+			<< zError(lastRet) << ", " << size << " bytes in, " << totalSize << " out); the caller receives an incomplete buffer";
+
+		return false;
+	}
+
+	return true;
 
 	//free(outputData);
 }
@@ -526,6 +544,7 @@ LocalDatabaseIterator::LocalDatabaseIterator(engine::db::berkeley::Transaction* 
 	cursor = databaseHandle->openCursor(transaction);
 
 	localDatabase = database;
+	lastCursorError = 0;
 
 	data.setReuseBuffer(true);
 	key.setReuseBuffer(true);
@@ -554,6 +573,7 @@ LocalDatabaseIterator::LocalDatabaseIterator(LocalDatabase* database, const berk
 	cursor = databaseHandle->openCursor(txn, cfg);
 
 	localDatabase = database;
+	lastCursorError = 0;
 
 	data.setReuseBuffer(true);
 	key.setReuseBuffer(true);
@@ -576,6 +596,7 @@ LocalDatabaseIterator::LocalDatabaseIterator(BerkeleyDatabase* dbHandle)
 
 	cursor = databaseHandle->openCursor(txn, cfg);
 	localDatabase = nullptr;
+	lastCursorError = 0;
 
 	data.setReuseBuffer(true);
 	key.setReuseBuffer(true);
@@ -600,11 +621,32 @@ void LocalDatabaseIterator::resetIterator() {
 	cursor = databaseHandle->openCursor(txn);
 }
 
+bool LocalDatabaseIterator::cursorReturnedNoRecord(int ret, const char* op) {
+	if (ret == 0)
+		return false;
+
+	if (ret == DB_NOTFOUND)
+		return true;
+
+	// record first, then log: the logging below must never be able to change the result
+	lastCursorError = ret;
+
+	try {
+		String dbName = (localDatabase != nullptr) ? localDatabase->getDatabaseName() : String("<raw handle>");
+
+		error() << "cursor error in " << op << " ret " << ret << " (" << db_strerror(ret)
+			<< ") database " << dbName << "; iteration ends here";
+	} catch (...) {
+	}
+
+	return true;
+}
+
 bool LocalDatabaseIterator::getNextKeyAndValue(ObjectInputStream* key, ObjectInputStream* data, uint32 lockMode, bool compressed) {
 	try {
 		Locker locker(&Environment::guard);
 
-		if (cursor->getNext(&this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getNext(&this->key, &this->data, lockMode), "LocalDatabaseIterator::getNextKeyAndValue")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
@@ -633,7 +675,7 @@ bool LocalDatabaseIterator::getNextValue(ObjectInputStream* data, uint32 lockMod
 	try {
 		Locker locker(&Environment::guard);
 
-		if (cursor->getNext(&this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getNext(&this->key, &this->data, lockMode), "LocalDatabaseIterator::getNextValue")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
@@ -663,7 +705,7 @@ bool LocalDatabaseIterator::getNextKey(ObjectInputStream* key, uint32 lockMode) 
 	Locker locker(&Environment::guard);
 
 	try {
-		if (cursor->getNext(&this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getNext(&this->key, &this->data, lockMode), "LocalDatabaseIterator::getNextKey")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
@@ -688,7 +730,7 @@ bool LocalDatabaseIterator::getPrevKeyAndValue(ObjectInputStream* key, ObjectInp
 	Locker locker(&Environment::guard);
 
 	try {
-		if (cursor->getPrev(&this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getPrev(&this->key, &this->data, lockMode), "LocalDatabaseIterator::getPrevKeyAndValue")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
@@ -717,7 +759,7 @@ bool LocalDatabaseIterator::getPrevKey(ObjectInputStream* key, uint32 lockMode) 
 	Locker locker(&Environment::guard);
 
 	try {
-		if (cursor->getPrev(&this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getPrev(&this->key, &this->data, lockMode), "LocalDatabaseIterator::getPrevKey")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
@@ -742,7 +784,7 @@ bool LocalDatabaseIterator::getLastKey(ObjectInputStream* key, uint32 lockMode) 
 	Locker locker(&Environment::guard);
 
 	try {
-		if (cursor->getLast(&this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getLast(&this->key, &this->data, lockMode), "LocalDatabaseIterator::getLastKey")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
@@ -799,7 +841,7 @@ bool LocalDatabaseIterator::getSearchKey(ObjectOutputStream* key, ObjectInputStr
 		DatabaseEntry keyDBE, dataDBE;
 		keyDBE.setData(key->getBuffer(), key->size());
 
-		if (cursor->getSearchKey(&keyDBE, &dataDBE, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->getSearchKey(&keyDBE, &dataDBE, lockMode), "LocalDatabaseIterator::getSearchKey")) {
 			/*this->key.setData(nullptr, 0);
 			  this->data.setData(nullptr, 0);*/
 			return false;
@@ -830,7 +872,7 @@ bool LocalDatabaseIterator::getSearchKeyRange(ObjectInputStream* key, ObjectInpu
 
 		int res = 0;
 
-		if ((res = cursor->getSearchKeyRange(&this->key, &this->data, lockMode))) {
+		if (cursorReturnedNoRecord((res = cursor->getSearchKeyRange(&this->key, &this->data, lockMode)), "LocalDatabaseIterator::getSearchKeyRange")) {
 			/*this->key.setData(nullptr, 0);
 			  this->data.setData(nullptr, 0);*/
 			return false;

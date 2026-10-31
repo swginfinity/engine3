@@ -30,7 +30,7 @@ IndexDatabase::IndexDatabase(DatabaseManager* dbEnv, const String& dbFileName, b
 		berkeley::DatabaseEntry searchKey;
 		searchKey.setData(&key, sizeof(uint64));
 
-		if (cursor->pGetSet(&searchKey, &this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->pGetSet(&searchKey, &this->key, &this->data, lockMode), "IndexDatabaseIterator::setKeyAndGetValue")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
@@ -64,7 +64,7 @@ IndexDatabase::IndexDatabase(DatabaseManager* dbEnv, const String& dbFileName, b
 		berkeley::DatabaseEntry searchKey;
 		searchKey.setData(&key, sizeof(uint64));
 
-		if (cursor->pGetNextDup(&searchKey, &this->key, &this->data, lockMode) != 0) {
+		if (cursorReturnedNoRecord(cursor->pGetNextDup(&searchKey, &this->key, &this->data, lockMode), "IndexDatabaseIterator::getNextKeyAndValue")) {
 			/*this->key.setData(nullptr, 0);
 			this->data.setData(nullptr, 0);*/
 			return false;
