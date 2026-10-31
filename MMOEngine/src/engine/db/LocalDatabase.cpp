@@ -335,8 +335,11 @@ bool LocalDatabase::uncompress(void* data, uint64 size, ObjectInputStream* decom
 	// NDEBUG compiles the assert above out, so a truncated or otherwise failed inflate (Z_OK left
 	// over, Z_BUF_ERROR, Z_MEM_ERROR, Z_NEED_DICT, Z_STREAM_ERROR) hands back a short buffer silently
 	if (lastRet != Z_STREAM_END) {
+		// Z_OK here = input exhausted before the end of the stream (a truncated record); zError(Z_OK) is "no error",
+		// which would read as healthy, so name it.
 		Logger::console.error() << "LocalDatabase::uncompress: inflate did not reach end of stream (ret " << lastRet << " "
-			<< zError(lastRet) << ", " << size << " bytes in, " << totalSize << " out); the caller receives an incomplete buffer";
+			<< (lastRet == Z_OK ? "Z_OK: input ended before the stream did, truncated record" : zError(lastRet))
+			<< ", " << size << " bytes in, " << totalSize << " out); the caller receives an incomplete buffer";
 
 		return false;
 	}
@@ -632,10 +635,17 @@ bool LocalDatabaseIterator::cursorReturnedNoRecord(int ret, const char* op) {
 	lastCursorError = ret;
 
 	try {
-		String dbName = (localDatabase != nullptr) ? localDatabase->getDatabaseName() : String("<raw handle>");
+		// getDatabaseFileName(): a const reference, no regex (getDatabaseName's replaceFirst builds a std::regex,
+		// can throw, and mangles names with "db" earlier in them)
+		auto msg = error();
+		msg << "cursor error in " << op << " ret " << ret << " (" << db_strerror(ret) << ") database ";
 
-		error() << "cursor error in " << op << " ret " << ret << " (" << db_strerror(ret)
-			<< ") database " << dbName << "; iteration ends here";
+		if (localDatabase != nullptr)
+			msg << localDatabase->getDatabaseFileName();
+		else
+			msg << "<raw handle>";
+
+		msg << "; iteration ends here";
 	} catch (...) {
 	}
 
